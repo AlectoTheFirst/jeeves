@@ -36,6 +36,7 @@ body {
 }
 
 #panel button,
+#panel select,
 #panel input[type="text"],
 #panel textarea,
 .card button {

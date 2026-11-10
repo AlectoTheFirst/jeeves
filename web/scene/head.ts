@@ -5,6 +5,7 @@ import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import type { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { createBackdrop } from "./backdrop.ts";
 import { createCrtPass } from "./crt.ts";
+import { faceById, type Face } from "./faces.ts";
 import { createHead, type Eyes, type HeadUniforms } from "./headMesh.ts";
 import { STATE_STYLES, type HeadState } from "./state.ts";
 
@@ -23,8 +24,10 @@ export class HeadScene {
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
   private pivot = new THREE.Group();
-  private uniforms: HeadUniforms;
-  private eyes: Eyes;
+  private uniforms!: HeadUniforms;
+  private eyes!: Eyes;
+  private headMesh: THREE.Mesh | null = null;
+  private face: Face = faceById(null);
   private backdrop: THREE.LineSegments;
   private timer = new THREE.Timer();
 
@@ -42,16 +45,13 @@ export class HeadScene {
   private glitchUntil = 0;
   private glitchStrength = 0;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, face: Face = faceById(null)) {
     this.renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.camera.position.set(0, -0.05, 6.2);
 
-    const head = createHead();
-    this.uniforms = head.uniforms;
-    this.eyes = head.eyes;
-    this.pivot.add(head.mesh, head.eyes.group);
+    this.setFace(face);
     this.scene.add(this.pivot);
 
     this.backdrop = createBackdrop(0x7cf8ff);
@@ -64,6 +64,32 @@ export class HeadScene {
 
     window.addEventListener("resize", () => this.resize());
     this.resize();
+  }
+
+  /** Build the head again with another face. A short glitch hides the change. */
+  setFace(face: Face): void {
+    if (this.headMesh) {
+      this.pivot.remove(this.headMesh, this.eyes.group);
+      this.headMesh.geometry.dispose();
+      (this.headMesh.material as THREE.Material).dispose();
+      this.eyes.group.traverse((o) => {
+        if (o instanceof THREE.Mesh) {
+          o.geometry.dispose();
+          (o.material as THREE.Material).dispose();
+        }
+      });
+      this.glitch(0.8, 250);
+    }
+    const head = createHead(face);
+    this.face = face;
+    this.headMesh = head.mesh;
+    this.uniforms = head.uniforms;
+    this.eyes = head.eyes;
+    this.pivot.add(head.mesh, head.eyes.group);
+  }
+
+  getFace(): Face {
+    return this.face;
   }
 
   setState(state: HeadState): void {
@@ -128,7 +154,9 @@ export class HeadScene {
     u.uRound.value = approach(u.uRound.value, this.mouthTarget.round, 25, dt);
 
     // State look: rim color, sweep band, brows, eyes and tilt.
-    this.rimColor.lerp(new THREE.Color(style.rim), 1 - Math.exp(-6 * dt));
+    // Idle and speaking use the face's own accent color.
+    const rim = this.state === "idle" || this.state === "speaking" ? this.face.colors.accent : style.rim;
+    this.rimColor.lerp(new THREE.Color(rim), 1 - Math.exp(-6 * dt));
     u.uRim.value.copy(this.rimColor);
     const pulse = style.pulse > 0 ? 0.5 + 0.5 * Math.sin(t * style.pulse * Math.PI * 2) : 1;
     const listen = this.state === "listening" ? this.listenLevel * 1.5 : 0;

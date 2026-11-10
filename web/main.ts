@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { encode, parseFromBrain, type AgentState, type FromBrain, type ToBrain } from "../sidecar/src/protocol.ts";
 import { MicRecorder } from "./audio/mic.ts";
 import { SpeechPlayer } from "./audio/player.ts";
+import { faceById, FACES } from "./scene/faces.ts";
 import { HeadScene } from "./scene/head.ts";
 import { HEAD_STATES } from "./scene/state.ts";
 import { toPlainText } from "./ui/plain.ts";
@@ -13,7 +14,18 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 
 const status = $("status");
 const transcript = new Transcript($("transcript"));
-const head = new HeadScene($<HTMLCanvasElement>("scene"));
+const FACE_KEY = "jeeves.face";
+function loadFaceId(): string | null {
+  // Browser preview: ?face=<id> picks a face.
+  const fromUrl = new URLSearchParams(location.search).get("face");
+  if (fromUrl) return fromUrl;
+  try {
+    return localStorage.getItem(FACE_KEY);
+  } catch {
+    return null;
+  }
+}
+const head = new HeadScene($<HTMLCanvasElement>("scene"), faceById(loadFaceId()));
 head.start();
 if (import.meta.env.DEV) document.body.classList.add("dev");
 
@@ -246,6 +258,9 @@ window.addEventListener("keydown", (e) => {
     void sendToBrain({ type: "interrupt" });
   } else if (e.key === "s") {
     togglePanel();
+  } else if (e.key === "f") {
+    const index = FACES.indexOf(head.getFace());
+    chooseFace(FACES[(index + 1) % FACES.length].id);
   } else if (e.key === "t") {
     setStatus(transcript.togglePinned() ? "transcript: always show" : "transcript: hide after 10 s");
   }
@@ -349,6 +364,23 @@ $("stop").addEventListener("click", () => {
   stopSpeech();
   void sendToBrain({ type: "interrupt" });
 });
+const faceSelect = $<HTMLSelectElement>("face");
+for (const face of FACES) faceSelect.add(new Option(face.name, face.id));
+faceSelect.value = head.getFace().id;
+
+function chooseFace(id: string): void {
+  const face = faceById(id);
+  head.setFace(face);
+  faceSelect.value = face.id;
+  setStatus(`face: ${face.name}`);
+  try {
+    localStorage.setItem(FACE_KEY, face.id);
+  } catch {
+    // The choice then lasts for this session only.
+  }
+}
+faceSelect.addEventListener("change", () => chooseFace(faceSelect.value));
+
 glitch.addEventListener("input", () => {
   $("glitch-value").textContent = glitch.value;
   player.setGlitchLevel(Number(glitch.value) / 100);

@@ -50,3 +50,34 @@ describe("faceWeights", () => {
     expect(faceWeights(center, shapeHead(center), false, false).mouth).toBe(0);
   });
 });
+
+describe("face presets", () => {
+  it("give every face a nose, a narrow jaw and symmetry", async () => {
+    const { FACES } = await import("./faces.ts");
+    for (const face of FACES) {
+      const nose = shapeHead(onSphere(0, -0.12), face.shape);
+      const cheek = shapeHead(onSphere(0.4, -0.12), face.shape);
+      expect(nose.z, face.id).toBeGreaterThan(cheek.z);
+      const l = shapeHead(onSphere(-0.3, 0.1), face.shape);
+      const r = shapeHead(onSphere(0.3, 0.1), face.shape);
+      expect(l.x, face.id).toBeCloseTo(-r.x);
+    }
+  });
+
+  it("shapes the mushroom face with a wide lower cap over a narrow stem", async () => {
+    const { faceById } = await import("./faces.ts");
+    const { shape } = faceById("shiitake");
+    const sideAt = (y: number) => ({ x: Math.sqrt(1 - y * y), y, z: 0 });
+    const crown = shapeHead(sideAt(0.55), shape);
+    const brim = shapeHead(sideAt(-0.2), shape);
+    const stem = shapeHead(sideAt(-0.8), shape);
+    expect(brim.x).toBeGreaterThan(crown.x * 1.3);
+    expect(brim.x).toBeGreaterThan(stem.x * 1.8);
+  });
+
+  it("falls back to the first face for an unknown id", async () => {
+    const { faceById, FACES } = await import("./faces.ts");
+    expect(faceById("nope")).toBe(FACES[0]);
+    expect(faceById("sprite").name).toBe("Sprite");
+  });
+});
