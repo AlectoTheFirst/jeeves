@@ -7,7 +7,9 @@ export const PROTOCOL_VERSION = 1;
 export type ToBrain =
   | { type: "ping"; id: number }
   | { type: "speak"; id: number; text: string }
-  | { type: "stop_speech" };
+  | { type: "stop_speech" }
+  /** `audio`: base64 of 16-bit little-endian mono PCM at 16 kHz. */
+  | { type: "transcribe"; id: number; audio: string };
 
 /** 1 piece of speech audio with the timing of each character in it. */
 export type SpeechChunk = {
@@ -30,9 +32,11 @@ export type FromBrain =
   | { type: "log"; level: "info" | "warn" | "error"; msg: string }
   | SpeechChunk
   | { type: "speech_end"; id: number }
-  | { type: "speech_error"; id: number; msg: string };
+  | { type: "speech_error"; id: number; msg: string }
+  | { type: "transcript"; id: number; text: string }
+  | { type: "transcript_error"; id: number; msg: string };
 
-const TO_BRAIN_TYPES = new Set<ToBrain["type"]>(["ping", "speak", "stop_speech"]);
+const TO_BRAIN_TYPES = new Set<ToBrain["type"]>(["ping", "speak", "stop_speech", "transcribe"]);
 const FROM_BRAIN_TYPES = new Set<FromBrain["type"]>([
   "ready",
   "pong",
@@ -40,6 +44,8 @@ const FROM_BRAIN_TYPES = new Set<FromBrain["type"]>([
   "speech_chunk",
   "speech_end",
   "speech_error",
+  "transcript",
+  "transcript_error",
 ]);
 
 const isNumberArray = (v: unknown): v is number[] => Array.isArray(v) && v.every((n) => typeof n === "number");
@@ -69,6 +75,10 @@ export function parseToBrain(line: string): ToBrain | null {
         : null;
     case "stop_speech":
       return { type: "stop_speech" };
+    case "transcribe":
+      return typeof obj.id === "number" && typeof obj.audio === "string"
+        ? { type: "transcribe", id: obj.id, audio: obj.audio }
+        : null;
   }
   return null;
 }
@@ -109,8 +119,13 @@ export function parseFromBrain(line: string): FromBrain | null {
     case "speech_end":
       return typeof obj.id === "number" ? { type: "speech_end", id: obj.id } : null;
     case "speech_error":
+    case "transcript_error":
       return typeof obj.id === "number" && typeof obj.msg === "string"
-        ? { type: "speech_error", id: obj.id, msg: obj.msg }
+        ? { type: obj.type, id: obj.id, msg: obj.msg }
+        : null;
+    case "transcript":
+      return typeof obj.id === "number" && typeof obj.text === "string"
+        ? { type: "transcript", id: obj.id, text: obj.text }
         : null;
   }
   return null;

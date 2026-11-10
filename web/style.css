@@ -57,6 +57,41 @@ body {
   gap: 6px;
 }
 
+#transcript {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: 44px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font: 12px/1.4 ui-monospace, Menlo, monospace;
+  pointer-events: none;
+}
+
+#transcript:empty {
+  display: none;
+}
+
+#transcript .line {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 4px;
+  color: var(--status-fg);
+  background: var(--status-bg);
+  overflow-wrap: anywhere;
+}
+
+#transcript .line.user {
+  align-self: flex-end;
+  color: #fff;
+}
+
+#transcript .line.pending {
+  opacity: 0.6;
+}
+
 #status {
   position: fixed;
   left: 50%;

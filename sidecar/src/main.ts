@@ -1,6 +1,10 @@
 // Jeeves brain: the sidecar process.
+import { writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { PROTOCOL_VERSION, encode, parseToBrain, type FromBrain } from "./protocol.ts";
+import { pcm16ToWav, transcribe, type SttOptions } from "./stt.ts";
 import { SAMPLE_RATE, streamSpeech, type VoiceConfig } from "./voice.ts";
 
 function send(msg: FromBrain): void {
@@ -9,6 +13,8 @@ function send(msg: FromBrain): void {
 
 function log(level: "info" | "warn" | "error", msg: string): void {
   send({ type: "log", level, msg });
+  // The Rust core prints stderr lines in its own log, which is easier to read in dev.
+  process.stderr.write(`${level}: ${msg}\n`);
 }
 
 // Milestone 5 moves these values to the settings file.
@@ -20,6 +26,16 @@ const voice: VoiceConfig = {
   similarityBoost: 0.75,
   style: 0.3,
   speed: 1.05,
+};
+
+// Milestone 5 moves these values to the settings file too.
+// JEEVES_STT_KEYTERMS: comma-separated words to expect, for example names.
+const stt: SttOptions = {
+  languageCode: process.env.JEEVES_STT_LANGUAGE ?? "en",
+  keyterms: (process.env.JEEVES_STT_KEYTERMS ?? "Claude,Claude Code,Jeeves")
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean),
 };
 
 // Only 1 utterance plays at a time. A new speak request stops the old one.
@@ -47,6 +63,24 @@ async function speak(id: number, text: string): Promise<void> {
   }
 }
 
+async function handleTranscribe(id: number, audio: string): Promise<void> {
+  if (!voice.apiKey) {
+    send({ type: "transcript_error", id, msg: "No ElevenLabs API key." });
+    return;
+  }
+  // Keep the last recording on disk, to find faults in the audio path.
+  const wavPath = join(tmpdir(), "jeeves-last-recording.wav");
+  writeFile(wavPath, pcm16ToWav(Buffer.from(audio, "base64"))).catch(() => {});
+  try {
+    const result = await transcribe(voice.apiKey, audio, stt);
+    log("info", `stt: language ${result.language} (${result.probability.toFixed(2)}), audio in ${wavPath}`);
+    send({ type: "transcript", id, text: result.text });
+  } catch (err) {
+    send({ type: "transcript_error", id, msg: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+// A recording arrives as 1 long line. readline has no line length limit.
 const input = createInterface({ input: process.stdin });
 
 input.on("line", (line) => {
@@ -65,6 +99,9 @@ input.on("line", (line) => {
     case "stop_speech":
       current?.abort();
       current = null;
+      break;
+    case "transcribe":
+      void handleTranscribe(msg.id, msg.audio);
       break;
   }
 });
