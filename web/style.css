@@ -1,0 +1,33 @@
+:root {
+  --status-fg: #7cf8ff;
+  --status-bg: rgba(0, 0, 0, 0.55);
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  /* The window is transparent. Only the head and the status line show. */
+  background: transparent;
+  user-select: none;
+}
+
+#scene {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+}
+
+#status {
+  position: fixed;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font: 12px/1.4 ui-monospace, Menlo, monospace;
+  color: var(--status-fg);
+  background: var(--status-bg);
+  pointer-events: none;
+}
