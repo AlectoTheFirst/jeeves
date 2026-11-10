@@ -40,6 +40,8 @@ export type ShapeParams = {
   cap?: { base: number; radius: number; depth: number; height: number };
   /** Optional lower-jaw tusks/fangs and thick scowling brows for a Goomba-like mushroom face. */
   tusks?: boolean;
+  /** Optional pear-shaped forest-spirit body with ears, leaf hat, whiskers and chevron belly. */
+  totoro?: boolean;
 };
 
 /** The first face. The other presets are in faces.ts. */
@@ -62,7 +64,7 @@ export const DEFAULT_SHAPE: ShapeParams = {
 
 /** Centers of the eye sockets, as unit-sphere coordinates before shaping. */
 export function eyeDirs(shape: ShapeParams = DEFAULT_SHAPE): Vec3[] {
-  const y = shape.tusks ? 0.15 : 0.1;
+  const y = shape.totoro ? 0.58 : shape.tusks ? 0.14 : 0.1;
   return [-1, 1].map((side) => normalize({ x: side * shape.eyeSpread, y, z: 0.92 }));
 }
 
@@ -129,15 +131,30 @@ export function shapeHead(unit: Vec3, shape: ShapeParams = DEFAULT_SHAPE): Vec3 
     }
   }
 
-  // A flatter face on humanoid heads; a mushroom cap keeps its smooth round dome.
-  if (!shape.cap && z > 0.45) z = 0.45 + (z - 0.45) * shape.flatness;
+  // Forest-spirit pear body: broad rounded head and shoulders, wide plump belly in the lower half.
+  if (shape.totoro) {
+    const around = Math.hypot(unit.x, unit.z) || 1;
+    const t = (y + 1) * 0.5;
+    outY = -1.08 + t * 1.88;
+    const dome = Math.pow(Math.max(1 - y * y, 0), 0.38);
+    const pear = (0.76 - 0.16 * y + 0.16 * bump(y, -0.28, 0.42)) * dome;
+    x = (unit.x / around) * pear;
+    z = (unit.z / around) * pear * shape.depth;
+  }
+
+  // A flatter face on humanoid heads; a mushroom cap or pear body keeps its smooth round dome.
+  if (!shape.cap && !shape.totoro && z > 0.45) z = 0.45 + (z - 0.45) * shape.flatness;
 
   // Face features. Each one is a bump on the front only.
   const ax = Math.abs(x);
   const socketX = shape.eyeSpread * shape.width;
   const n = shape.nose;
   let dz = 0;
-  if (shape.tusks) {
+  if (shape.totoro) {
+    // Plump protruding belly and gentle muzzle arch around the wide grin.
+    dz += 0.06 * bump(outY, -0.38, 0.34) * bump(x, 0, 0.55);
+    dz += 0.03 * bump(outY, 0.2, 0.12) * bump(x, 0, 0.38);
+  } else if (shape.tusks) {
     // Goomba facial contours: recessed eye sockets, furrowed glabella bump, gentle frown crease, and puffy lower chin roll.
     const frownY = -0.22 - 0.65 * x * x;
     dz -= 0.055 * bump(ax, 0.2, 0.14) * bump(outY, 0.15, 0.2); // Eye sockets.

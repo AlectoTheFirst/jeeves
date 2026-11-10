@@ -75,6 +75,15 @@ describe("face presets", () => {
     expect(brim.x).toBeGreaterThan(stem.x * 1.8);
   });
 
+  it("shapes the totoro preset with a belly wider than its head", async () => {
+    const { faceById } = await import("./faces.ts");
+    const { shape } = faceById("totoro");
+    const sideAt = (y: number) => ({ x: Math.sqrt(1 - y * y), y, z: 0 });
+    const head = shapeHead(sideAt(0.55), shape);
+    const belly = shapeHead(sideAt(-0.3), shape);
+    expect(belly.x).toBeGreaterThan(head.x * 1.3);
+  });
+
   it("falls back to the first face for an unknown id", async () => {
     const { faceById, FACES } = await import("./faces.ts");
     expect(faceById("nope")).toBe(FACES[0]);

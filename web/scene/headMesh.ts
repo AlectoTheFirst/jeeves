@@ -53,6 +53,7 @@ const fragmentShader = /* glsl */ `
   uniform float uTime;
   uniform float uJaw;
   uniform float uSmooth;
+  uniform float uTotoro;
   uniform vec3 uBase;
   uniform vec3 uHighlight;
   uniform vec3 uRim;
@@ -69,6 +70,13 @@ const fragmentShader = /* glsl */ `
   varying vec3 vNormal;
   varying vec3 vRest;
   varying float vMouth;
+
+  float chevron(vec2 p, vec2 c) {
+    vec2 d = p - c;
+    float curve = c.y - 0.38 * abs(d.x) - 0.9 * d.x * d.x;
+    float thick = 0.022 * clamp(1.0 - abs(d.x) / 0.095, 0.0, 1.0);
+    return (1.0 - smoothstep(thick * 0.6, thick, abs(p.y - curve))) * (1.0 - smoothstep(0.08, 0.095, abs(d.x)));
+  }
 
   void main() {
     // Flat normal per facet, blended with smooth vertex normal for organic shapes.
@@ -97,7 +105,27 @@ const fragmentShader = /* glsl */ `
       }
       color = mix(color, capColor, cap);
     }
-    if (vMouth < -2.5) {
+    if (uTotoro > 0.5 && vMouth >= -0.2 && vRest.z > 0.15) {
+      // Large round creamy belly patch with 2 rows of grey chevron markings.
+      vec2 bp = vec2(vRest.x / 0.68, (vRest.y + 0.44) / 0.52);
+      float belly = 1.0 - smoothstep(0.92, 1.0, length(bp));
+      if (belly > 0.0) {
+        vec3 cream = mix(vec3(0.55, 0.51, 0.39), vec3(0.97, 0.94, 0.77), light);
+        float mark = 0.0;
+        mark = max(mark, chevron(vRest.xy, vec2(-0.25, -0.1)));
+        mark = max(mark, chevron(vRest.xy, vec2(0.0, -0.07)));
+        mark = max(mark, chevron(vRest.xy, vec2(0.25, -0.1)));
+        mark = max(mark, chevron(vRest.xy, vec2(-0.37, -0.26)));
+        mark = max(mark, chevron(vRest.xy, vec2(-0.125, -0.23)));
+        mark = max(mark, chevron(vRest.xy, vec2(0.125, -0.23)));
+        mark = max(mark, chevron(vRest.xy, vec2(0.37, -0.26)));
+        cream = mix(cream, color * 0.9, mark * 0.85);
+        color = mix(color, cream, belly);
+      }
+    }
+    if (vMouth < -3.5) {
+      color = mix(vec3(0.11, 0.28, 0.09), vec3(0.38, 0.68, 0.22), light);
+    } else if (vMouth < -2.5) {
       color = mix(vec3(0.22, 0.12, 0.06), vec3(0.58, 0.37, 0.22), light);
     } else if (vMouth < -1.5) {
       color = mix(vec3(0.06, 0.06, 0.07), vec3(0.24, 0.24, 0.27), light);
@@ -113,7 +141,21 @@ const fragmentShader = /* glsl */ `
     // Inside of the mouth: dark, more so when the jaw is open.
     float open = clamp(uJaw * 4.0, 0.0, 1.0);
     float mouthDark = smoothstep(0.1, 0.6, max(vMouth, 0.0)) * (0.55 + 0.45 * open);
-    if (uSmooth > 0.5 && vMouth >= -0.2 && vRest.z > 0.4) {
+    if (uTotoro > 0.5 && vMouth >= -0.2 && vRest.z > 0.35) {
+      // Wide crescent toothy grin with 6 white teeth separated by vertical lines.
+      float gx = vRest.x;
+      float topY = 0.22 - 0.18 * gx * gx;
+      float botY = 0.08 + 1.05 * gx * gx - open * 0.06;
+      if (abs(gx) < 0.34 && vRest.y < topY + 0.01 && vRest.y > botY - 0.01) {
+        float inGrin = (1.0 - smoothstep(topY - 0.008, topY + 0.006, vRest.y)) * smoothstep(botY - 0.006, botY + 0.008, vRest.y);
+        float border = 1.0 - (1.0 - smoothstep(topY - 0.016, topY - 0.004, vRest.y)) * smoothstep(botY + 0.004, botY + 0.016, vRest.y);
+        float seam = 1.0 - smoothstep(0.003, 0.009, abs(fract(gx / 0.11 + 0.5) - 0.5) * 0.11);
+        vec3 tooth = mix(vec3(0.78, 0.8, 0.78), vec3(1.0, 1.0, 0.98), light);
+        tooth = mix(tooth, vec3(0.12, 0.11, 0.1), max(border, seam * 0.75));
+        color = mix(color, tooth, inGrin);
+        mouthDark = 0.0;
+      }
+    } else if (uSmooth > 0.5 && vMouth >= -0.2 && vRest.z > 0.4) {
       // Wide gentle frown crease between the two tusks when closed, opening cleanly with uJaw.
       float frownY = -0.22 - 0.65 * vRest.x * vRest.x;
       float line = (1.0 - smoothstep(0.007, 0.02, abs(vRest.y - frownY))) * (1.0 - smoothstep(0.34, 0.38, abs(vRest.x)));
@@ -132,6 +174,7 @@ export type HeadUniforms = {
   uRound: { value: number };
   uBrow: { value: number };
   uSmooth: { value: number };
+  uTotoro: { value: number };
   uHinge: { value: THREE.Vector3 };
   uBase: { value: THREE.Color };
   uHighlight: { value: THREE.Color };
@@ -237,11 +280,112 @@ function addTusksAndBrows(
   }
 }
 
+function addTotoroParts(
+  parts: { pos: number[]; idx: number[]; jaw: number[]; mouth: number[]; lip: number[]; brow: number[] },
+  shape: ShapeParams,
+): void {
+  // Small dark triangular nose between the eyes.
+  const nose = new THREE.SphereGeometry(1, 16, 12);
+  const np = nose.getAttribute("position");
+  const noseSurf = shapeHead(normalize({ x: 0, y: 0.56, z: 0.95 }), shape);
+  for (let i = 0; i < np.count; i++) {
+    const nx = np.getX(i) * 0.058 * (1 + 0.25 * np.getY(i));
+    const ny = np.getY(i) * 0.025;
+    const nz = np.getZ(i) * 0.03;
+    np.setXYZ(i, nx, noseSurf.y + ny, noseSurf.z + 0.02 + nz);
+  }
+  appendMesh(parts, nose, { jaw: 0, mouth: -2, lip: 0, brow: 0 });
+
+  // Green leaf hat on the crown of the head, with a vertical stalk.
+  const leaf = new THREE.SphereGeometry(1, 24, 14);
+  const lp = leaf.getAttribute("position");
+  for (let i = 0; i < lp.count; i++) {
+    const lx = lp.getX(i);
+    const ly = lp.getY(i);
+    const lz = lp.getZ(i);
+    const angle = Math.atan2(lz, lx);
+    const lobe = 1 + 0.08 * Math.cos(angle * 5);
+    const r = 0.21 * lobe;
+    const droop = -0.035 * (lx * lx + lz * lz);
+    lp.setXYZ(i, lx * r, 0.81 + ly * 0.05 + droop, lz * r * 0.9 + 0.04);
+  }
+  appendMesh(parts, leaf, { jaw: 0, mouth: -4, lip: 0, brow: 0 });
+
+  const stalk = new THREE.CylinderGeometry(0.009, 0.013, 0.14, 10);
+  stalk.translate(0, 0.91, 0.04);
+  appendMesh(parts, stalk, { jaw: 0, mouth: -4, lip: 0, brow: 0 });
+
+  for (const side of [-1, 1]) {
+    // Tall pointed ears narrowed at the base stem and anchored into the top of the head.
+    const ear = new THREE.SphereGeometry(1, 20, 16);
+    const ep = ear.getAttribute("position");
+    for (let i = 0; i < ep.count; i++) {
+      const ey = ep.getY(i); // -1 at base, +1 at pointed tip.
+      const h = (ey + 1) * 0.5;
+      const pinch = h < 0.2 ? 0.38 + 0.62 * (h / 0.2) : Math.pow(Math.max(1 - (h - 0.2) / 0.8, 0), 0.7);
+      const ex = ep.getX(i) * 0.105 * pinch;
+      const ez = ep.getZ(i) * 0.07 * pinch;
+      ep.setXYZ(i, ex, h * 0.46, ez);
+    }
+    ear.rotateZ(-side * 0.12);
+    ear.translate(side * 0.27, 0.66, 0.02);
+    appendMesh(parts, ear, { jaw: 0, mouth: 0, lip: 0, brow: 0 });
+
+    // Tiny white mini-spirit sitting on the leaf hat on each side of the stalk.
+    const mini = new THREE.SphereGeometry(1, 16, 12);
+    const mp = mini.getAttribute("position");
+    for (let i = 0; i < mp.count; i++) {
+      let mx = mp.getX(i) * 0.042;
+      let my = mp.getY(i) * 0.058;
+      let mz = mp.getZ(i) * 0.04;
+      if (mp.getY(i) > 0.6 && Math.abs(mp.getX(i)) > 0.25) my += 0.024; // Tiny ears.
+      mp.setXYZ(i, side * 0.085 + mx, 0.89 + my, 0.05 + mz);
+    }
+    appendMesh(parts, mini, { jaw: 0, mouth: -1, lip: 0, brow: 0 });
+
+    // 3 long black whiskers fanning out from each cheek beside the nose and grin.
+    for (const wIdx of [-1, 0, 1]) {
+      const whisker = new THREE.CylinderGeometry(0.005, 0.01, 0.42, 8);
+      whisker.rotateZ(side * (Math.PI * 0.5 + wIdx * 0.11));
+      whisker.rotateY(-side * 0.15);
+      whisker.translate(side * 0.58, 0.34 - wIdx * 0.052, 0.36);
+      appendMesh(parts, whisker, { jaw: 0, mouth: -2, lip: 0, brow: 0 });
+    }
+
+    // Plump arms hugging the sides of the pear body.
+    const arm = new THREE.SphereGeometry(1, 20, 14);
+    const ap = arm.getAttribute("position");
+    for (let i = 0; i < ap.count; i++) {
+      ap.setXYZ(i, ap.getX(i) * 0.15, ap.getY(i) * 0.42, ap.getZ(i) * 0.2);
+    }
+    arm.rotateZ(side * 0.18);
+    arm.translate(side * 0.82, -0.28, 0.02);
+    appendMesh(parts, arm, { jaw: 0, mouth: 0, lip: 0, brow: 0 });
+
+    // Stubby grey-brown feet at the bottom with 3 small claws.
+    const foot = new THREE.SphereGeometry(1, 20, 14);
+    const fp = foot.getAttribute("position");
+    for (let i = 0; i < fp.count; i++) {
+      const fy = fp.getY(i) < 0 ? fp.getY(i) * 0.35 : fp.getY(i);
+      fp.setXYZ(i, fp.getX(i) * 0.18, fy * 0.1, fp.getZ(i) * 0.22);
+    }
+    foot.translate(side * 0.34, -1.04, 0.12);
+    appendMesh(parts, foot, { jaw: 0, mouth: 0, lip: 0, brow: 0 });
+
+    for (const cIdx of [-1, 0, 1]) {
+      const claw = new THREE.ConeGeometry(0.018, 0.055, 8);
+      claw.rotateX(Math.PI * 0.42);
+      claw.translate(side * 0.34 + cIdx * 0.055, -1.07, 0.31);
+      appendMesh(parts, claw, { jaw: 0, mouth: -1, lip: 0, brow: 0 });
+    }
+  }
+}
+
 function buildGeometry(shape: ShapeParams): THREE.BufferGeometry {
   const sphere = new THREE.SphereGeometry(1, WIDTH_SEGMENTS, HEIGHT_SEGMENTS);
   // SphereGeometry: row j has polar angle PI * j / HEIGHT_SEGMENTS, from the top.
   // Pick the row just above the lip line. The cut is between this row and the next.
-  const seamY = shape.tusks ? -0.3 : MOUTH_Y;
+  const seamY = shape.totoro ? 0.28 : shape.tusks ? -0.3 : MOUTH_Y;
   const seamRow = Math.floor((Math.acos(seamY) / Math.PI) * HEIGHT_SEGMENTS);
   const pos = sphere.getAttribute("position");
   const count = pos.count;
@@ -258,7 +402,7 @@ function buildGeometry(shape: ShapeParams): THREE.BufferGeometry {
     const row = Math.floor(i / (WIDTH_SEGMENTS + 1));
     const unit = normalize({ x: pos.getX(i), y: pos.getY(i), z: pos.getZ(i) });
     const shaped = shapeHead(unit, shape);
-    const inStem = shape.cap !== undefined && unit.y < shape.cap.base;
+    const inStem = (shape.cap !== undefined && unit.y < shape.cap.base) || (shape.totoro === true && unit.y < 0.08);
     const w = faceWeights(unit, shaped, row > seamRow && !inStem, row === seamRow || row === seamRow + 1);
     parts.pos[i * 3] = shaped.x;
     parts.pos[i * 3 + 1] = shaped.y;
@@ -270,6 +414,7 @@ function buildGeometry(shape: ShapeParams): THREE.BufferGeometry {
   }
 
   if (shape.tusks) addTusksAndBrows(parts, shape);
+  if (shape.totoro) addTotoroParts(parts, shape);
 
   const out = new THREE.BufferGeometry();
   out.setIndex(parts.idx);
@@ -319,7 +464,7 @@ function buildEyes(face: Face): Eyes {
   const specMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
   const coreGeometry = new THREE.SphereGeometry(1, 24, 12);
   const whiteGeometry = new THREE.SphereGeometry(1, 28, 16);
-  if (style.white) {
+  if (style.white && face.shape.tusks) {
     const wp = whiteGeometry.getAttribute("position");
     for (let i = 0; i < wp.count; i++) {
       const wy = wp.getY(i);
@@ -362,7 +507,9 @@ function buildEyes(face: Face): Eyes {
     back.position.z = -0.006;
     // The pupil sits in front of the eye white, in the lower-inner portion with a bright catchlight dot.
     if (style.white) {
-      bar.position.set((index === 0 ? 1 : -1) * style.white.length * 0.22, -style.white.height * 0.15, 0.014);
+      const inward = face.shape.totoro ? 0.04 : 0.22;
+      const down = face.shape.totoro ? 0.0 : -0.15;
+      bar.position.set((index === 0 ? 1 : -1) * style.white.length * inward, style.white.height * down, 0.014);
       const spec = new THREE.Mesh(coreGeometry, specMat);
       spec.scale.set(style.length * 0.34, style.height * 0.3, 0.01);
       spec.position.set(bar.position.x + style.length * 0.28, bar.position.y + style.height * 0.32, 0.028);
@@ -389,7 +536,8 @@ export function createHead(face: Face): { mesh: THREE.Mesh; uniforms: HeadUnifor
     uWide: { value: 0 },
     uRound: { value: 0 },
     uBrow: { value: 0 },
-    uSmooth: { value: face.shape.tusks ? 0.9 : 0 },
+    uSmooth: { value: face.shape.tusks || face.shape.totoro ? 0.9 : 0 },
+    uTotoro: { value: face.shape.totoro ? 1 : 0 },
     uHinge: { value: new THREE.Vector3(JAW_HINGE.x, JAW_HINGE.y, JAW_HINGE.z) },
     uBase: { value: new THREE.Color(c.base) },
     uHighlight: { value: new THREE.Color(c.highlight) },
