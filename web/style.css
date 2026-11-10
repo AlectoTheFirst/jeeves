@@ -19,6 +19,44 @@ body {
   height: 100vh;
 }
 
+#dev-panel {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 6px;
+  font: 12px/1.4 ui-monospace, Menlo, monospace;
+  color: var(--status-fg);
+  background: var(--status-bg);
+}
+
+#dev-panel[hidden] {
+  display: none;
+}
+
+#dev-panel textarea,
+#dev-panel button {
+  font: inherit;
+  color: inherit;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(124, 248, 255, 0.4);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+
+#dev-panel textarea {
+  resize: vertical;
+}
+
+#dev-panel .row {
+  display: flex;
+  gap: 6px;
+}
+
 #status {
   position: fixed;
   left: 50%;
