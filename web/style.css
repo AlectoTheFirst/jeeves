@@ -1,6 +1,11 @@
 :root {
-  --status-fg: #7cf8ff;
-  --status-bg: rgba(0, 0, 0, 0.55);
+  --fg: #7cf8ff;
+  --fg-strong: #ffffff;
+  --bg: rgba(0, 0, 0, 0.6);
+  --bg-input: rgba(0, 0, 0, 0.5);
+  --border: rgba(124, 248, 255, 0.4);
+  --warn: #ffb000;
+  --font: 12px/1.4 ui-monospace, Menlo, monospace;
 }
 
 html,
@@ -8,7 +13,7 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  /* The window is transparent. Only the head and the status line show. */
+  /* The window is transparent. Only the head and the panels show. */
   background: transparent;
   user-select: none;
 }
@@ -19,53 +24,141 @@ body {
   height: 100vh;
 }
 
-#dev-panel {
+/* Shared look for every panel and control. */
+#panel,
+#transcript .line,
+.card,
+#status {
+  font: var(--font);
+  color: var(--fg);
+  background: var(--bg);
+  border-radius: 6px;
+}
+
+#panel button,
+#panel input[type="text"],
+#panel textarea,
+.card button {
+  font: inherit;
+  color: inherit;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+
+#panel button:hover,
+.card button:hover,
+.card button.chosen {
+  color: var(--fg-strong);
+  border-color: var(--fg);
+}
+
+.row {
+  display: flex;
+  gap: 6px;
+}
+
+.row.wrap {
+  flex-wrap: wrap;
+}
+
+#panel {
   position: fixed;
   left: 12px;
   right: 12px;
   top: 12px;
+  z-index: 3;
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 8px;
-  border-radius: 6px;
-  font: 12px/1.4 ui-monospace, Menlo, monospace;
-  color: var(--status-fg);
-  background: var(--status-bg);
+  user-select: text;
+  transition: opacity 400ms ease;
 }
 
-#dev-panel[hidden] {
+#panel.fading {
+  opacity: 0;
+}
+
+#panel[hidden] {
   display: none;
 }
 
-#dev-panel textarea,
-#dev-panel button {
-  font: inherit;
-  color: inherit;
-  background: rgba(0, 0, 0, 0.5);
-  border: 1px solid rgba(124, 248, 255, 0.4);
-  border-radius: 4px;
-  padding: 4px 6px;
+#panel .stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-#dev-panel textarea {
+#panel input[type="text"] {
+  flex: 1;
+  min-width: 0;
+}
+
+#panel textarea {
   resize: vertical;
 }
 
-#dev-panel .row {
+body:not(.dev) .dev-only {
+  display: none;
+}
+
+/* Permission and question cards: top of the window, above the head. */
+#requests {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  top: 12px;
+  z-index: 2;
   display: flex;
+  flex-direction: column;
   gap: 6px;
 }
 
+.card {
+  padding: 8px;
+  border: 1px solid var(--border);
+  user-select: text;
+}
+
+.card.permission {
+  border-color: var(--warn);
+}
+
+.card p {
+  margin: 0 0 6px;
+  color: var(--fg-strong);
+}
+
+.card pre {
+  margin: 0 0 6px;
+  max-height: 6em;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The conversation: bottom of the window, scrolls. */
 #transcript {
   position: fixed;
   left: 12px;
   right: 12px;
   bottom: 44px;
+  max-height: 32vh;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font: 12px/1.4 ui-monospace, Menlo, monospace;
+  user-select: text;
+}
+
+#transcript {
+  transition: opacity 800ms ease;
+}
+
+#transcript.faded {
+  opacity: 0;
   pointer-events: none;
 }
 
@@ -77,15 +170,30 @@ body {
   align-self: flex-start;
   max-width: 100%;
   padding: 3px 8px;
-  border-radius: 4px;
-  color: var(--status-fg);
-  background: var(--status-bg);
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+#transcript .line.head {
+  cursor: pointer;
+}
+
+#transcript .line.clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
 }
 
 #transcript .line.user {
   align-self: flex-end;
-  color: #fff;
+  color: var(--fg-strong);
+}
+
+#transcript .line.tool {
+  background: transparent;
+  opacity: 0.7;
+  padding: 0 8px;
 }
 
 #transcript .line.pending {
@@ -97,10 +205,10 @@ body {
   left: 50%;
   bottom: 12px;
   transform: translateX(-50%);
+  max-width: calc(100% - 24px);
   padding: 4px 10px;
-  border-radius: 4px;
-  font: 12px/1.4 ui-monospace, Menlo, monospace;
-  color: var(--status-fg);
-  background: var(--status-bg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   pointer-events: none;
 }

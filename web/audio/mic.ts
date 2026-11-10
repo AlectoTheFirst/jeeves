@@ -1,5 +1,8 @@
 // Push-to-talk mic capture. Collects raw samples while it records, then gives
 // 16 kHz PCM for speech to text.
+//
+// The mic opens at the first press and then stays open. A short pre-roll keeps
+// the start of the first word.
 import { level, resample, STT_RATE, toBase64, toPcm16 } from "./pcm.ts";
 
 /** Recordings shorter than this are taps, not speech. */
@@ -8,6 +11,10 @@ const MIN_SECONDS = 0.3;
 const MAX_SECONDS = 60;
 /** Recording time after the key comes up. People release the key before the last sound ends. */
 const TAIL_MS = 300;
+/** Audio from before the key went down that goes into the recording. */
+const PREROLL_SECONDS = 0.3;
+/** A recording with a lower peak comes from a dead mic. The service guesses words from noise. */
+export const SILENCE_PEAK = 0.003;
 
 // The worklet copies each 128-sample block to the main thread. Inline, so that the
 // build does not need a separate file.
@@ -29,12 +36,26 @@ export type MicEvents = {
   onMaxLength?: () => void;
 };
 
+/** The result of a recording. */
+export type Recording =
+  | { kind: "audio"; audio: string; peak: number }
+  | { kind: "short" }
+  | { kind: "silent"; peak: number };
+
+export function peakOf(samples: Float32Array): number {
+  let peak = 0;
+  for (let i = 0; i < samples.length; i++) peak = Math.max(peak, Math.abs(samples[i]));
+  return peak;
+}
+
 export class MicRecorder {
   private ctx: AudioContext | null = null;
   private stream: MediaStream | null = null;
   private node: AudioWorkletNode | null = null;
+  private opening: Promise<void> | null = null;
   private blocks: Float32Array[] = [];
   private samples = 0;
+  private preroll: Float32Array[] = [];
   private recording = false;
   private levelAcc: Float32Array[] = [];
 
@@ -44,9 +65,24 @@ export class MicRecorder {
     return this.recording;
   }
 
+  /** Mic state for the status line, when a recording is silent. */
+  diagnose(): string {
+    const track = this.stream?.getAudioTracks()[0];
+    if (!track || !this.ctx) return "mic closed";
+    return `track ${track.readyState}${track.muted ? " muted" : ""}, audio ${this.ctx.state}`;
+  }
+
   /** Open the mic. The first call asks the user for permission. */
-  private async open(): Promise<void> {
-    if (this.ctx && this.node) return;
+  private open(): Promise<void> {
+    this.opening ??= this.doOpen().catch((err) => {
+      this.opening = null;
+      throw err;
+    });
+    return this.opening;
+  }
+
+  private async doOpen(): Promise<void> {
+    const t0 = performance.now();
     this.stream = await navigator.mediaDevices.getUserMedia({
       // Browser noise suppression can damage speech for STT. Echo cancellation is not
       // needed, because the head stops speaking when the user talks.
@@ -60,23 +96,23 @@ export class MicRecorder {
     this.node = new AudioWorkletNode(this.ctx, "jeeves-capture");
     this.node.port.onmessage = (e: MessageEvent<Float32Array>) => this.onBlock(e.data);
     source.connect(this.node);
+    console.info(`[mic] open in ${Math.round(performance.now() - t0)} ms`);
   }
 
   private onBlock(block: Float32Array): void {
-    if (!this.recording || !this.ctx) return;
+    if (!this.ctx) return;
+    if (!this.recording) {
+      this.preroll.push(block);
+      while (this.preroll.length * 128 > this.ctx.sampleRate * PREROLL_SECONDS) this.preroll.shift();
+      return;
+    }
     this.blocks.push(block);
     this.samples += block.length;
     this.levelAcc.push(block);
     // About 30 level updates per second.
     if (this.levelAcc.length * 128 >= this.ctx.sampleRate / 30) {
-      const joined = new Float32Array(this.levelAcc.reduce((n, b) => n + b.length, 0));
-      let o = 0;
-      for (const b of this.levelAcc) {
-        joined.set(b, o);
-        o += b.length;
-      }
+      this.events.onLevel?.(level(join(this.levelAcc)));
       this.levelAcc = [];
-      this.events.onLevel?.(level(joined));
     }
     if (this.samples >= this.ctx.sampleRate * MAX_SECONDS) this.events.onMaxLength?.();
   }
@@ -84,39 +120,46 @@ export class MicRecorder {
   async start(): Promise<void> {
     await this.open();
     await this.ctx!.resume();
-    this.blocks = [];
-    this.samples = 0;
+    this.blocks = this.preroll;
+    this.samples = this.preroll.reduce((n, b) => n + b.length, 0);
+    this.preroll = [];
     this.levelAcc = [];
     this.recording = true;
   }
 
   /**
    * Stop after a short tail, so that the last word is not cut off.
-   * Returns base64 PCM (16 kHz, 16-bit, mono), or null for a short tap.
    * If `keep()` is true at the end of the tail, the recording continues and the
    * result is undefined.
    */
-  async stopAfterTail(keep: () => boolean): Promise<string | null | undefined> {
-    if (!this.recording) return null;
+  async stopAfterTail(keep: () => boolean): Promise<Recording | undefined> {
+    if (!this.recording) return { kind: "short" };
     await new Promise((resolve) => setTimeout(resolve, TAIL_MS));
     if (keep()) return undefined;
     return this.stop();
   }
 
-  /** Stop now. Returns base64 PCM (16 kHz, 16-bit, mono), or null for a short tap. */
-  stop(): string | null {
-    if (!this.recording || !this.ctx) return null;
+  /** Stop now. The audio is base64 PCM (16 kHz, 16-bit, mono). */
+  stop(): Recording {
+    if (!this.recording || !this.ctx) return { kind: "short" };
     this.recording = false;
     this.events.onLevel?.(0);
     const rate = this.ctx.sampleRate;
-    if (this.samples < rate * MIN_SECONDS) return null;
-    const all = new Float32Array(this.samples);
-    let offset = 0;
-    for (const b of this.blocks) {
-      all.set(b, offset);
-      offset += b.length;
-    }
+    const all = join(this.blocks);
     this.blocks = [];
-    return toBase64(toPcm16(resample(all, rate, STT_RATE)));
+    if (all.length < rate * MIN_SECONDS) return { kind: "short" };
+    const peak = peakOf(all);
+    if (peak < SILENCE_PEAK) return { kind: "silent", peak };
+    return { kind: "audio", peak, audio: toBase64(toPcm16(resample(all, rate, STT_RATE))) };
   }
+}
+
+function join(blocks: Float32Array[]): Float32Array {
+  const all = new Float32Array(blocks.reduce((n, b) => n + b.length, 0));
+  let offset = 0;
+  for (const b of blocks) {
+    all.set(b, offset);
+    offset += b.length;
+  }
+  return all;
 }

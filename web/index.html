@@ -8,14 +8,19 @@
   </head>
   <body>
     <canvas id="scene" data-tauri-drag-region></canvas>
+    <div id="requests"></div>
     <div id="transcript" aria-live="polite"></div>
     <div id="status">starting</div>
-    <form id="dev-panel" hidden>
-      <textarea id="dev-text" rows="3">Well hello there! I am your new desktop companion. Ask me anything about your code.</textarea>
-      <label>glitch <input id="dev-glitch" type="range" min="0" max="100" value="50" /> <span id="dev-glitch-value">50</span></label>
+    <form id="panel" hidden>
+      <label class="stack">project folder
+        <span class="row"><input id="project" type="text" placeholder="~/code/my-project" spellcheck="false" /><button type="button" id="project-set">Set</button></span>
+      </label>
+      <textarea id="text" rows="3" placeholder="Type a request, or hold Space and speak."></textarea>
+      <label>glitch <input id="glitch" type="range" min="0" max="100" value="50" /> <span id="glitch-value">50</span></label>
       <div class="row">
-        <button type="submit">Speak</button>
-        <button type="button" id="dev-stop">Stop</button>
+        <button type="submit">Ask</button>
+        <button type="button" id="speak" class="dev-only">Speak</button>
+        <button type="button" id="stop">Stop</button>
       </div>
     </form>
     <script type="module" src="./main.ts"></script>

@@ -24,6 +24,35 @@ describe("parseFromBrain", () => {
     for (const msg of messages) expect(parseFromBrain(encode(msg))).toEqual(msg);
   });
 
+  it("round-trips agent messages", () => {
+    const messages = [
+      { type: "agent_status", state: "busy", project: "/p", msg: "" },
+      { type: "permission_request", id: 3, text: "Allow?", detail: "npm test" },
+      {
+        type: "question",
+        id: 4,
+        questions: [{ question: "Q?", header: "H", multiSelect: false, options: [{ label: "A", description: "a" }] }],
+      },
+      { type: "agent_result", ok: true, costUsd: 0.12, turns: 3 },
+    ] as const;
+    for (const msg of messages) expect(parseFromBrain(encode(msg))).toEqual(msg);
+  });
+
+  it("rejects a question with a bad option", () => {
+    const bad = { type: "question", id: 1, questions: [{ question: "Q", header: "H", multiSelect: false, options: [{ label: 1 }] }] };
+    expect(parseFromBrain(JSON.stringify(bad))).toBeNull();
+  });
+
+  it("parses answers to the brain", () => {
+    expect(parseToBrain('{"type":"question_answer","id":4,"answers":{"Q?":"A"}}')).toEqual({
+      type: "question_answer",
+      id: 4,
+      answers: { "Q?": "A" },
+    });
+    expect(parseToBrain('{"type":"question_answer","id":4,"answers":{"Q?":1}}')).toBeNull();
+    expect(parseToBrain('{"type":"permission_answer","id":2,"allow":"yes"}')).toBeNull();
+  });
+
   it("rejects a log with an unknown level", () => {
     expect(parseFromBrain('{"type":"log","level":"debug","msg":"x"}')).toBeNull();
   });
