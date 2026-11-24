@@ -1,6 +1,7 @@
 // The read-only tools run with no question only inside the project folder. A read
 // outside it, for example of ~/.ssh, shows a permission card like any other tool.
 import { existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /** Tools that only read. They run with no question inside the project folder. */
@@ -51,17 +52,41 @@ export function globBase(pattern: string): string {
 
 const text = (v: unknown) => (typeof v === "string" && v !== "" ? v : undefined);
 
-/** The paths that a read tool touches. Null if the tool is not a read tool. */
+/**
+ * The path with a leading "~" or "~/" replaced by the home folder, as the Claude Code
+ * tools resolve it. Null for a "~user" path, whose folder is not known.
+ */
+export function expandHome(path: string, home: string = homedir()): string | null {
+  if (path === "~") return home;
+  if (path.startsWith("~/")) return join(home, path.slice(2));
+  if (path.startsWith("~")) return null;
+  return path;
+}
+
+/**
+ * The paths that a read tool touches. Null if the tool is not a read tool or a path
+ * starts with "~user".
+ */
 export function readTargets(tool: string, input: Record<string, unknown>, cwd: string): string[] | null {
+  const at = (from: string, path: string | undefined, fallback: string) => {
+    const full = expandHome(path ?? fallback);
+    return full === null ? null : resolve(from, full);
+  };
   switch (tool) {
-    case "Read":
-      return [resolve(cwd, text(input.file_path) ?? "")];
-    case "Glob": {
-      const base = resolve(cwd, text(input.path) ?? ".");
-      return [base, resolve(base, globBase(text(input.pattern) ?? ""))];
+    case "Read": {
+      const file = at(cwd, text(input.file_path), "");
+      return file === null ? null : [file];
     }
-    case "Grep":
-      return [resolve(cwd, text(input.path) ?? ".")];
+    case "Glob": {
+      const base = at(cwd, text(input.path), ".");
+      const pattern = expandHome(text(input.pattern) ?? "");
+      if (base === null || pattern === null) return null;
+      return [base, resolve(base, globBase(pattern))];
+    }
+    case "Grep": {
+      const dir = at(cwd, text(input.path), ".");
+      return dir === null ? null : [dir];
+    }
     default:
       return null;
   }

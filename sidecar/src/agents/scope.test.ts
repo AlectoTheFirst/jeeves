@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { globBase, isInside, isProjectRead } from "./scope.ts";
+import { expandHome, globBase, isInside, isProjectRead } from "./scope.ts";
 
 describe("globBase", () => {
   it("keeps the fixed part of the pattern", () => {
@@ -13,6 +13,25 @@ describe("globBase", () => {
     expect(globBase("/etc/*")).toBe("/etc");
     expect(globBase("/*")).toBe("/");
     expect(globBase("docs/readme.md")).toBe("docs");
+  });
+});
+
+describe("expandHome", () => {
+  it("replaces a leading ~ with the home folder", () => {
+    expect(expandHome("~", "/h")).toBe("/h");
+    expect(expandHome("~/", "/h")).toBe("/h");
+    expect(expandHome("~/.ssh/id_rsa", "/h")).toBe("/h/.ssh/id_rsa");
+    expect(expandHome("~/.ssh/*", "/h")).toBe("/h/.ssh/*");
+  });
+  it("keeps other paths", () => {
+    expect(expandHome("src/~/a", "/h")).toBe("src/~/a");
+    expect(expandHome("/p/~", "/h")).toBe("/p/~");
+    expect(expandHome("", "/h")).toBe("");
+  });
+  it("returns null for a ~user path", () => {
+    expect(expandHome("~root", "/h")).toBeNull();
+    expect(expandHome("~root/.ssh", "/h")).toBeNull();
+    expect(expandHome("~*", "/h")).toBeNull();
   });
 });
 
@@ -55,6 +74,27 @@ describe("isProjectRead", () => {
     expect(isProjectRead("Glob", { pattern: "*.pem", path: secret }, project)).toBe(false);
     expect(isProjectRead("Glob", { pattern: "/etc/*" }, project)).toBe(false);
     expect(isProjectRead("Grep", { pattern: "x", path: "/" }, project)).toBe(false);
+  });
+
+  it("asks for reads under ~ outside the project folder", () => {
+    expect(isProjectRead("Read", { file_path: "~/.ssh/id_rsa" }, project)).toBe(false);
+    expect(isProjectRead("Grep", { pattern: ".", path: "~/.ssh" }, project)).toBe(false);
+    expect(isProjectRead("Grep", { pattern: ".", path: "~" }, project)).toBe(false);
+    expect(isProjectRead("Glob", { pattern: "*", path: "~" }, project)).toBe(false);
+    expect(isProjectRead("Glob", { pattern: "~/.ssh/*" }, project)).toBe(false);
+    expect(isProjectRead("Glob", { pattern: "~/*" }, project)).toBe(false);
+  });
+
+  it("asks for reads under ~user", () => {
+    expect(isProjectRead("Read", { file_path: "~root/.ssh/id_rsa" }, project)).toBe(false);
+    expect(isProjectRead("Grep", { pattern: ".", path: "~root" }, project)).toBe(false);
+    expect(isProjectRead("Glob", { pattern: "*", path: "~root/.ssh" }, project)).toBe(false);
+    expect(isProjectRead("Glob", { pattern: "~root/.ssh/*" }, project)).toBe(false);
+  });
+
+  it("approves reads under ~ when the project is the home folder", () => {
+    expect(isProjectRead("Grep", { pattern: ".", path: "~/src" }, homedir())).toBe(true);
+    expect(isProjectRead("Glob", { pattern: "~/src/*" }, homedir())).toBe(true);
   });
 
   it("asks for a read through a symlink that leaves the project folder", () => {
