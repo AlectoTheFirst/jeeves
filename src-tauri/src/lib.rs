@@ -1,6 +1,7 @@
 mod faces;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,9 @@ use tauri_plugin_shell::{
 
 /// The running sidecar brain. `None` when the brain is not running.
 struct Brain(Mutex<Option<CommandChild>>);
+
+/// The queue of lines for the brain stdin. 1 writer thread writes them in order.
+struct BrainWriter(Sender<Vec<u8>>);
 
 /// Restart bookkeeping for the brain.
 struct Supervisor {
@@ -122,15 +126,37 @@ async fn notify(title: String, body: String) -> Result<(), String> {
 
 /// Send 1 protocol line from the webview to the brain stdin.
 #[tauri::command]
-fn brain_send(line: String, brain: State<'_, Brain>) -> Result<(), String> {
+fn brain_send(line: String, brain: State<'_, Brain>, writer: State<'_, BrainWriter>) -> Result<(), String> {
     if line.contains('\n') {
         return Err("a protocol line must not contain a newline".into());
     }
-    let mut guard = brain.0.lock().map_err(|e| e.to_string())?;
-    let child = guard.as_mut().ok_or("brain is not running")?;
+    if brain.0.lock().map_err(|e| e.to_string())?.is_none() {
+        return Err("brain is not running".into());
+    }
     let mut buf = line.into_bytes();
     buf.push(b'\n');
-    child.write(&buf).map_err(|e| e.to_string())
+    // A sync command runs on the main thread. A write to a full pipe would block the window.
+    writer.0.send(buf).map_err(|e| e.to_string())
+}
+
+/// Write each queued line to the current brain. A line for a brain that stopped is dropped.
+fn start_brain_writer(app: AppHandle) -> Sender<Vec<u8>> {
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    std::thread::Builder::new()
+        .name("brain-writer".into())
+        .spawn(move || {
+            for buf in rx {
+                let brain = app.state::<Brain>();
+                let Ok(mut guard) = brain.0.lock() else { continue };
+                if let Some(child) = guard.as_mut() {
+                    if let Err(err) = child.write(&buf) {
+                        eprintln!("[brain] write failed: {err}");
+                    }
+                }
+            }
+        })
+        .expect("failed to start the brain writer thread");
+    tx
 }
 
 /// Keychain service name for all Jeeves secrets.
@@ -254,6 +280,7 @@ pub fn run() {
             faces::face_remove
         ])
         .setup(|app| {
+            app.manage(BrainWriter(start_brain_writer(app.handle().clone())));
             spawn_brain(app.handle())?;
             Ok(())
         })
