@@ -135,7 +135,7 @@ const STARTER_BEHAVIOR: Record<string, Partial<CharacterBehavior>> = {
 export function starterCharacter(face: string): Character {
   return {
     voice: { ...DEFAULT_CHARACTER.voice },
-    behavior: { ...DEFAULT_CHARACTER.behavior, ...STARTER_BEHAVIOR[face] },
+    behavior: { ...DEFAULT_CHARACTER.behavior, ...(Object.hasOwn(STARTER_BEHAVIOR, face) ? STARTER_BEHAVIOR[face] : {}) },
   };
 }
 
@@ -158,7 +158,7 @@ export const DEFAULT_CONFIG: Config = {
 
 /** The character for a face: its own entry, or the starter values. */
 export function characterFor(config: Config, face = config.face): Character {
-  return config.characters[face] ?? starterCharacter(face);
+  return Object.hasOwn(config.characters, face) ? config.characters[face] : starterCharacter(face);
 }
 
 // ---------------------------------------------------------------- checks
@@ -204,7 +204,7 @@ function parseMcp(raw: unknown): McpConfig {
   const m = obj(raw);
   const servers: Record<string, McpServer> = {};
   for (const [name, value] of Object.entries(obj(m.servers)).slice(0, 50)) {
-    const server = MCP_OWN_NAME.test(name) ? parseMcpServer(value) : null;
+    const server = MCP_OWN_NAME.test(name) && name !== "__proto__" ? parseMcpServer(value) : null;
     if (server) servers[name] = server;
   }
   const trusted = Array.isArray(m.trusted)
@@ -240,7 +240,7 @@ export function parseConfig(raw: unknown): Config {
   const d = DEFAULT_CONFIG;
   const characters: Record<string, Character> = {};
   for (const [face, value] of Object.entries(obj(r.characters))) {
-    if (/^[\w-]{1,80}$/.test(face)) characters[face] = parseCharacter(value, face);
+    if (/^[\w-]{1,80}$/.test(face) && face !== "__proto__") characters[face] = parseCharacter(value, face);
   }
   const h = obj(r.hearing);
   const a = obj(r.agent);

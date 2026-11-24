@@ -50,6 +50,16 @@ describe("characterFor", () => {
     expect(characterFor(DEFAULT_CONFIG, "unknown").behavior.name).toBe("Jeeves");
   });
 
+  it("does not take a face ID from the object prototype", () => {
+    expect(characterFor(DEFAULT_CONFIG, "constructor").behavior.name).toBe("Jeeves");
+    expect(characterFor(DEFAULT_CONFIG, "toString").voice.voiceId).toBe(DEFAULT_VOICE_ID);
+    const c = parseConfig(JSON.parse('{"face":"voice","characters":{"__proto__":{"behavior":{"name":"Evil"}}}}'));
+    expect(Object.keys(c.characters)).toEqual([]);
+    expect(characterFor(c).behavior.name).toBe("Jeeves");
+    const m = parseConfig(JSON.parse('{"mcp":{"servers":{"__proto__":{"command":"x"}}}}'));
+    expect(Object.keys(m.mcp.servers)).toEqual([]);
+  });
+
   it("puts the name and personality in the prompt", () => {
     const prompt = personaPrompt(characterFor(DEFAULT_CONFIG, "shiitake").behavior);
     expect(prompt).toContain('"Shiitake"');
