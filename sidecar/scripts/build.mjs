@@ -30,3 +30,15 @@ execFileSync(bun, ["build", "--compile", join(root, "sidecar", "src", "main.ts")
   stdio: "inherit",
 });
 console.log(`sidecar built: ${outFile}`);
+
+// Sign the brain with the app identity and entitlements, so that it runs under the hardened runtime.
+const identity = process.env.APPLE_SIGNING_IDENTITY;
+if (process.platform === "darwin" && identity) {
+  const entitlements = join(root, "src-tauri", "Entitlements.plist");
+  execFileSync(
+    "codesign",
+    ["--force", "--timestamp", "--options", "runtime", "--entitlements", entitlements, "--sign", identity, outFile],
+    { stdio: "inherit" },
+  );
+  console.log(`sidecar signed: ${identity}`);
+}
