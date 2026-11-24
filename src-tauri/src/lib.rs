@@ -202,6 +202,9 @@ fn on_brain_exit(app: &AppHandle, code: Option<i32>) {
     let attempt = match supervisor.state.lock() {
         Ok(mut state) => {
             state.1 = if state.0.elapsed() >= HEALTHY_RUN { 1 } else { state.1 + 1 };
+            // A failed spawn does not reset the start time. The next exit then measures
+            // from here, and the restart delay (at most 30 s) is below HEALTHY_RUN.
+            state.0 = Instant::now();
             state.1
         }
         Err(_) => MAX_FAST_FAILURES + 1,
