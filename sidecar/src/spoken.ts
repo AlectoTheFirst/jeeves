@@ -78,7 +78,8 @@ export function permissionQuestion(tool: string, input: Record<string, unknown>,
   if (tool === "Bash" && typeof input.command === "string" && input.command.trim()) {
     const words = input.command.trim().split(/\s+/);
     const shown = words.slice(0, 8).join(" ");
-    return `I want to run ${shown}${words.length > 8 ? " and more" : ""}. Allow?`;
+    const cut = words.length > 8 || shown.length > 80;
+    return `I want to run ${shown.slice(0, 80)}${cut ? " and more" : ""}. Allow?`;
   }
   // The head speaks as its character, so "Claude wants" becomes "I want".
   if (title) return `${toSpeakable(title).replace(/^Claude( Code)? wants\b/i, "I want")}. Allow?`;

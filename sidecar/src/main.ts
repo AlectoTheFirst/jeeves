@@ -127,6 +127,7 @@ let pendingCharacterNote: string | null = null;
 
 async function setConfig(next: Config): Promise<void> {
   const before = JSON.stringify(sessionOptions());
+  const gen = sessionGen;
   const projectsChanged = next.agent.useClaudeProjects !== config.agent.useClaudeProjects;
   config = next;
   settings.config = config;
@@ -135,7 +136,8 @@ async function setConfig(next: Config): Promise<void> {
   sendCost();
   if (projectsChanged) sendProjects();
   // A new model or personality needs a new session. Resume keeps the conversation.
-  if (session && JSON.stringify(sessionOptions()) !== before) {
+  // A session that started during the save already has the new options.
+  if (session && gen === sessionGen && JSON.stringify(sessionOptions()) !== before) {
     if (agentState === "busy") restartWhenIdle = true;
     else {
       startSession(true);
@@ -530,7 +532,7 @@ function hostFor(gen: number): typeof agentHost {
   };
 }
 
-async function setProject(path: string): Promise<void> {
+function setProject(path: string): void {
   const full = resolve(path.replace(/^~(?=$|\/)/, process.env.HOME ?? "~"));
   try {
     if (!statSync(full).isDirectory()) throw new Error("not a folder");
@@ -543,8 +545,8 @@ async function setProject(path: string): Promise<void> {
   settings.project = full;
   settings.recent = addRecent(settings.recent, full);
   sendProjects();
-  await saveSettings(settings).catch((err) => log("warn", `settings: ${errorText(err)}`));
   startSession();
+  saveSoon();
 }
 
 // ---------------------------------------------------------------- what the user says
@@ -590,7 +592,7 @@ function route(text: string): void {
     else if (path === settings.project) say("We are already in that project.");
     else {
       say(`Switching to ${path.split("/").filter(Boolean).at(-1)}.`);
-      void setProject(path);
+      setProject(path);
     }
     return;
   }
@@ -710,7 +712,7 @@ function handleLine(line: string): void {
       void interrupt();
       break;
     case "set_project":
-      void setProject(msg.path);
+      setProject(msg.path);
       break;
     case "set_config":
       void setConfig(msg.config);
@@ -748,4 +750,5 @@ sendCost();
 const waiting = early;
 early = null;
 for (const line of waiting) handleLine(line);
-startSession();
+// A buffered set_project or user_text has started the session already.
+if (!session) startSession();

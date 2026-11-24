@@ -82,6 +82,9 @@ describe("spoken text", () => {
     expect(permissionQuestion("Bash", { command: "a b c d e f g h i j" })).toBe(
       "I want to run a b c d e f g h and more. Allow?",
     );
+    expect(permissionQuestion("Bash", { command: `curl -d ${"x".repeat(200)}` })).toBe(
+      `I want to run curl -d ${"x".repeat(72)} and more. Allow?`,
+    );
     expect(permissionQuestion("Write", {}, "Claude wants to write hello.txt")).toBe(
       "I want to write hello.txt. Allow?",
     );
