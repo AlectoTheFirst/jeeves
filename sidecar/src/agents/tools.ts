@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { open, readdir, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Worker } from "node:worker_threads";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -100,6 +100,8 @@ export const TOOLS: Anthropic.Tool[] = [
 export const MAX_BASH_TIMEOUT = 600_000;
 /** The characters of stdout and of stderr that a Bash command keeps. */
 const MAX_OUTPUT = 1_000_000;
+/** The Read tool reads at most this many bytes of a file. */
+const MAX_READ_BYTES = 256_000;
 export const MAX_GLOB_RESULTS = 1000;
 export const MAX_GREP_RESULTS = 100;
 const GREP_TIME_LIMIT = 20_000;
@@ -381,6 +383,20 @@ export function grepSimple(
   });
 }
 
+/** The first MAX_READ_BYTES of a file as UTF-8, with a note if the file is longer. */
+async function readHead(path: string): Promise<string> {
+  const file = await open(path, "r");
+  try {
+    const { size } = await file.stat();
+    const buffer = Buffer.alloc(Math.min(size, MAX_READ_BYTES));
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+    const text = buffer.subarray(0, bytesRead).toString("utf8");
+    return size > bytesRead ? `${text}\n[The file has ${size} bytes. Only the first ${bytesRead} are shown.]` : text;
+  } finally {
+    await file.close();
+  }
+}
+
 export async function executeTool(
   name: string,
   input: Record<string, unknown>,
@@ -391,8 +407,7 @@ export async function executeTool(
     switch (name) {
       case "Read": {
         const filePath = resolve(cwd, String(input.file_path ?? ""));
-        const content = await readFile(filePath, "utf8");
-        return { content, isError: false };
+        return { content: await readHead(filePath), isError: false };
       }
       case "Bash": {
         const command = String(input.command ?? "");

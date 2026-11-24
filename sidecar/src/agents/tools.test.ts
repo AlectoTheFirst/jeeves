@@ -108,3 +108,17 @@ describe("Bash", () => {
     expect(r.content).toContain("hi");
   });
 });
+
+describe("Read", () => {
+  it("returns a small file whole", async () => {
+    const r = await executeTool("Read", { file_path: "a.ts" }, root);
+    expect(r).toEqual({ content: "const a = 1;\n", isError: false });
+  });
+
+  it("returns only the head of a large file", async () => {
+    writeFileSync(join(root, "big.txt"), "x".repeat(300_000));
+    const r = await executeTool("Read", { file_path: "big.txt" }, root);
+    expect(r.content.startsWith("x".repeat(256_000))).toBe(true);
+    expect(r.content).toContain("[The file has 300000 bytes. Only the first 256000 are shown.]");
+  });
+});
