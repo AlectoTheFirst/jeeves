@@ -296,10 +296,15 @@ const spokenOptions = (q: Question) => {
 /** The first question that has no answer yet. */
 const nextOpenQuestion = (req: OpenQuestion) => req.questions.find((q) => !(q.question in req.answers));
 
+const PERMISSION_DETAIL_MAX = 20_000;
+
+/** The command or target first, then the description. A cut text ends with a note. */
 function permissionDetail(ask: PermissionAsk): string {
   const str = (key: string) => (typeof ask.input[key] === "string" ? (ask.input[key] as string) : "");
   const detail = str("command") || str("file_path") || str("url") || JSON.stringify(ask.input);
-  return [ask.description, detail].filter(Boolean).join("\n").slice(0, 600);
+  const full = [detail, ask.description].filter(Boolean).join("\n\n");
+  if (full.length <= PERMISSION_DETAIL_MAX) return full;
+  return `${full.slice(0, PERMISSION_DETAIL_MAX)}\n[cut: ${full.length - PERMISSION_DETAIL_MAX} more characters]`;
 }
 
 function toQuestions(input: Record<string, unknown>): Question[] {
@@ -319,6 +324,8 @@ function toQuestions(input: Record<string, unknown>): Question[] {
 
 let settings: BrainSettings = emptySettings();
 let session: BrainAgent | null = null;
+/** Counts sessions. Callbacks of a closed session see an older count. */
+let sessionGen = 0;
 let agentState: AgentState = "no_project";
 let agentMsg = "";
 /** Set when a resumed session fails before it starts, to try once without resume. */
@@ -332,6 +339,8 @@ let lastToolSpokenAt = 0;
 let sessionId = "";
 let sessionResumed = false;
 let resumeIdUsed: string | undefined;
+/** User text that arrived during a turn. Each 1 goes to the agent after a result, as its own turn. */
+const queuedInput: string[] = [];
 
 function setAgentState(state: AgentState, msg = ""): void {
   agentState = state;
@@ -354,7 +363,7 @@ function startSession(resume = true): void {
   restartWhenIdle = false;
   // A resumed conversation can have answers from another character.
   pendingCharacterNote = resumeId ? characterNote(characterFor(config).behavior) : null;
-  session = createAgent(project, agentHost, resumeId, sessionOptions());
+  session = createAgent(project, hostFor(++sessionGen), resumeId, sessionOptions());
   session.start();
   // The SDK sends its init message only after the first user message, and it queues
   // input until then. So the session is ready for input now.
@@ -370,7 +379,9 @@ function onAgentMessage(msg: AgentMessage): void {
         sessionId = msg.session_id;
         // The API agent makes a new ID at each start. Only the same ID carries old cost.
         sessionResumed = msg.session_id === resumeIdUsed;
-        if (settings.project && settings.sessions[settings.project] !== msg.session_id) {
+        // Only Claude Code can resume a session ID.
+        const resumable = config.agent.provider === "claude-code";
+        if (resumable && settings.project && settings.sessions[settings.project] !== msg.session_id) {
           settings.sessions[settings.project] = msg.session_id;
           saveSettings(settings).catch((err) => log("warn", `settings: ${errorText(err)}`));
         }
@@ -417,22 +428,27 @@ function onAgentMessage(msg: AgentMessage): void {
       send({ type: "agent_said", text: said, more: turnHasDetail });
       lastSpoken = "";
       turnHasDetail = false;
-      countCost(msg.total_cost_usd);
+      countCost(msg.total_cost_usd, ok);
       send({ type: "agent_result", ok, costUsd: msg.total_cost_usd, turns: msg.num_turns });
       setAgentState("ready");
       if (restartWhenIdle) {
         restartWhenIdle = false;
         startSession(true);
       }
+      const next = queuedInput.shift();
+      if (next !== undefined) sendToAgent(next);
       break;
     }
   }
 }
 
-function countCost(total: number): void {
+function countCost(total: number, ok: boolean): void {
   const key = sessionId || "unknown";
-  const delta = costDelta(total, settings.sessionTotals[key], sessionResumed);
-  settings.sessionTotals = rememberTotal(settings.sessionTotals, key, total);
+  const base = settings.sessionTotals[key];
+  // A crash or startup error result can report a total of 0. Such a result leaves the known session total as it is.
+  const zeroed = !ok && (total === 0 || (base !== undefined && total < base));
+  const delta = zeroed ? 0 : costDelta(total, base, sessionResumed);
+  if (!zeroed) settings.sessionTotals = rememberTotal(settings.sessionTotals, key, total);
   settings.spend = { ...settings.spend, usd: settings.spend.usd + delta, requests: settings.spend.requests + 1 };
   saveSoon();
   sendCost();
@@ -454,6 +470,7 @@ const agentHost = {
   },
   onFault: (err: unknown) => {
     declineAll();
+    queuedInput.length = 0;
     const project = settings.project;
     // A saved session can be gone. Start a new 1 once instead.
     if (!sessionStarted && project && settings.sessions[project]) {
@@ -470,6 +487,11 @@ const agentHost = {
   },
   askPermission: (ask: PermissionAsk) =>
     new Promise<boolean>((resolvePromise) => {
+      // An aborted signal never fires "abort" again.
+      if (ask.signal.aborted) {
+        resolvePromise(false);
+        return;
+      }
       const id = nextRequestId++;
       openRequests.set(id, { kind: "permission", id, resolve: resolvePromise });
       const text = permissionQuestion(ask.tool, ask.input, ask.title);
@@ -480,7 +502,7 @@ const agentHost = {
   askQuestions: (input: Record<string, unknown>, signal: AbortSignal) =>
     new Promise<Record<string, string> | null>((resolvePromise) => {
       const questions = toQuestions(input);
-      if (questions.length === 0) {
+      if (questions.length === 0 || signal.aborted) {
         resolvePromise(null);
         return;
       }
@@ -492,6 +514,22 @@ const agentHost = {
     }),
 };
 
+/** The host for 1 session. It ignores the callbacks of a session that is no longer current. */
+function hostFor(gen: number): typeof agentHost {
+  const current = () => gen === sessionGen;
+  return {
+    onMessage: (msg) => {
+      if (current()) agentHost.onMessage(msg);
+    },
+    onFault: (err) => {
+      if (current()) agentHost.onFault(err);
+      else log("warn", `agent: fault from a closed session: ${errorText(err)}`);
+    },
+    askPermission: (ask) => (current() ? agentHost.askPermission(ask) : Promise.resolve(false)),
+    askQuestions: (input, signal) => (current() ? agentHost.askQuestions(input, signal) : Promise.resolve(null)),
+  };
+}
+
 async function setProject(path: string): Promise<void> {
   const full = resolve(path.replace(/^~(?=$|\/)/, process.env.HOME ?? "~"));
   try {
@@ -501,6 +539,7 @@ async function setProject(path: string): Promise<void> {
     return;
   }
   declineAll();
+  queuedInput.length = 0;
   settings.project = full;
   settings.recent = addRecent(settings.recent, full);
   sendProjects();
@@ -555,13 +594,24 @@ function route(text: string): void {
     }
     return;
   }
+  sendToAgent(t);
+}
+
+/** Start a turn with the text, or queue it while a turn runs. */
+function sendToAgent(t: string): void {
   if (isBlocked(settings.spend, config.agent.budgetUsd)) {
+    queuedInput.length = 0;
     say("The cost limit is reached. Raise it in the settings, or reset the cost in the log.");
     sendCost();
     return;
   }
   if (!settings.project) {
     say("Give me a project folder first. Type it in the panel.");
+    return;
+  }
+  if (agentState === "busy") {
+    queuedInput.push(t);
+    say("I will do that next.");
     return;
   }
   // After a fault there is no session. Start a new 1; it reads the queued message.
@@ -576,6 +626,7 @@ function route(text: string): void {
 
 async function interrupt(): Promise<void> {
   declineAll();
+  queuedInput.length = 0;
   stopAllSpeech();
   try {
     await session?.interrupt();
@@ -608,7 +659,15 @@ async function handleTranscribe(id: number, audio: string): Promise<void> {
 // A recording arrives as 1 long line. readline has no line length limit.
 const input = createInterface({ input: process.stdin });
 
+// Lines that arrive before the settings are loaded wait in this list.
+let early: string[] | null = [];
+
 input.on("line", (line) => {
+  if (early) early.push(line);
+  else handleLine(line);
+});
+
+function handleLine(line: string): void {
   const msg = parseToBrain(line);
   if (!msg) {
     log("warn", `unknown message: ${line.slice(0, 200)}`);
@@ -669,7 +728,7 @@ input.on("line", (line) => {
       resetCost();
       break;
   }
-});
+}
 
 // The Rust core closes stdin when the app quits. Stop with it.
 input.on("close", () => {
@@ -686,4 +745,7 @@ config = parseConfig(settings.config);
 sendConfig();
 sendProjects();
 sendCost();
+const waiting = early;
+early = null;
+for (const line of waiting) handleLine(line);
 startSession();
