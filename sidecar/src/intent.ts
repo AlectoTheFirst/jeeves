@@ -72,3 +72,26 @@ export function matchOption(text: string, labels: readonly string[]): number {
   }
   return -1;
 }
+
+/**
+ * The project name in a switch command, such as "switch to project jeeves" or
+ * "open the project star garden". Null if the reply is not a switch command.
+ */
+export function parseProjectSwitch(text: string): string | null {
+  const m =
+    /^(?:please )?(?:switch|change|go|move)(?: over)? to (?:the )?project (.+)$/.exec(normalize(text)) ??
+    /^(?:please )?(?:open|use|load) (?:the )?project (.+)$/.exec(normalize(text));
+  const name = m?.[1].replace(/ please$/, "").trim();
+  return name ? name : null;
+}
+
+/** Letters and digits only, so that "star garden" matches "star_garden". */
+const squash = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+
+/** The recent project folder whose last path part matches a spoken name. Null if none. */
+export function matchProject(name: string, recent: readonly string[]): string | null {
+  const want = squash(name);
+  if (!want) return null;
+  const base = (path: string) => squash(path.split("/").filter(Boolean).at(-1) ?? "");
+  return recent.find((p) => base(p) === want) ?? recent.find((p) => base(p).startsWith(want)) ?? null;
+}

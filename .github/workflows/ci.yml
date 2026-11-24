@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # Jeeves runs on macOS, but the code also compiles on Linux, so a standard runner is enough.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            sidecar/package-lock.json
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # The system libraries that Tauri needs to compile on Linux.
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix sidecar
+
+      # Type check and production build of the web view. The Rust check needs dist/.
+      - name: Build the web view
+        run: npm run build
+
+      - name: Unit tests
+        run: npm test
+
+      # The Tauri build script needs the brain binary, so build it first.
+      - name: Build the brain
+        run: npm run sidecar:build
+
+      - name: Check the Rust shell
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml

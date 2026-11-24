@@ -34,6 +34,11 @@ export type MicEvents = {
   onLevel?: (value: number) => void;
   /** The recording hit the maximum length and stopped by itself. */
   onMaxLength?: () => void;
+  /**
+   * The first real sound of a recording arrived. A mic that was idle can give exact
+   * zeros for some time after a start. `wakeMs` is that time, 0 if the mic was live.
+   */
+  onLive?: (wakeMs: number) => void;
 };
 
 /** The result of a recording. */
@@ -41,6 +46,15 @@ export type Recording =
   | { kind: "audio"; audio: string; peak: number }
   | { kind: "short" }
   | { kind: "silent"; peak: number };
+
+/** True if the block is digital silence: exact zeros, which a live mic never gives. */
+export const isDead = (block: Float32Array) => block.every((x) => x === 0);
+
+/** Remove the exact zeros at the start, from a mic that was not live yet. */
+export function trimDeadStart(samples: Float32Array): Float32Array {
+  const first = samples.findIndex((x) => x !== 0);
+  return first < 0 ? new Float32Array(0) : samples.subarray(first);
+}
 
 export function peakOf(samples: Float32Array): number {
   let peak = 0;
@@ -57,12 +71,19 @@ export class MicRecorder {
   private samples = 0;
   private preroll: Float32Array[] = [];
   private recording = false;
+  private live = false;
+  private startedAt = 0;
   private levelAcc: Float32Array[] = [];
 
   constructor(private events: MicEvents = {}) {}
 
   get isRecording(): boolean {
     return this.recording;
+  }
+
+  /** True when the current recording has real sound from the mic. */
+  get isLive(): boolean {
+    return this.live;
   }
 
   /** Mic state for the status line, when a recording is silent. */
@@ -108,6 +129,10 @@ export class MicRecorder {
     }
     this.blocks.push(block);
     this.samples += block.length;
+    if (!this.live && !isDead(block)) {
+      this.live = true;
+      this.events.onLive?.(Math.round(performance.now() - this.startedAt));
+    }
     this.levelAcc.push(block);
     // About 30 level updates per second.
     if (this.levelAcc.length * 128 >= this.ctx.sampleRate / 30) {
@@ -117,6 +142,15 @@ export class MicRecorder {
     if (this.samples >= this.ctx.sampleRate * MAX_SECONDS) this.events.onMaxLength?.();
   }
 
+  /**
+   * Open the mic and start the audio before the first recording. The audio stalls for
+   * about 1 s when the mic opens, and that must not happen while the user talks.
+   */
+  async warmUp(): Promise<void> {
+    await this.open();
+    await this.ctx!.resume();
+  }
+
   async start(): Promise<void> {
     await this.open();
     await this.ctx!.resume();
@@ -124,7 +158,10 @@ export class MicRecorder {
     this.samples = this.preroll.reduce((n, b) => n + b.length, 0);
     this.preroll = [];
     this.levelAcc = [];
+    this.startedAt = performance.now();
+    this.live = this.blocks.some((b) => !isDead(b));
     this.recording = true;
+    if (this.live) this.events.onLive?.(0);
   }
 
   /**
@@ -145,8 +182,11 @@ export class MicRecorder {
     this.recording = false;
     this.events.onLevel?.(0);
     const rate = this.ctx.sampleRate;
-    const all = join(this.blocks);
+    const all = trimDeadStart(join(this.blocks));
     this.blocks = [];
+    this.live = false;
+    // Only zeros: the mic never gave sound. That is not a short tap.
+    if (all.length === 0) return { kind: "silent", peak: 0 };
     if (all.length < rate * MIN_SECONDS) return { kind: "short" };
     const peak = peakOf(all);
     if (peak < SILENCE_PEAK) return { kind: "silent", peak };

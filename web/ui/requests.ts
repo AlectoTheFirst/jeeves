@@ -71,6 +71,11 @@ export class RequestCards {
     card.append(skip);
   }
 
+  /** Remove all cards, for example when the brain stops. */
+  closeAll(): void {
+    for (const id of [...this.cards.keys()]) this.close(id);
+  }
+
   close(id: number): void {
     this.cards.get(id)?.remove();
     this.cards.delete(id);

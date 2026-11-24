@@ -1,4 +1,5 @@
-// Face presets: shape, colors and eye style. All of them are original designs.
+// Face presets: shape, colors and eye style. Installed face packages add more faces.
+import type { BufferGeometry, Quaternion, Texture, Vector3 } from "three";
 import { DEFAULT_SHAPE, type ShapeParams } from "./shape.ts";
 
 export type EyeStyle = {
@@ -15,6 +16,20 @@ export type EyeStyle = {
   glowHeight: number;
   /** Optional cartoon eye white behind the core. Without it, the eye has a dark slit behind it. */
   white?: { color: number; length: number; height: number };
+  /** Pupil offset in the eye white: toward the nose, and down. Parts of the white size. */
+  pupil?: { inward: number; down: number };
+  /** Scale for the lower half of the eye white. 1 = round. */
+  whiteFlat?: number;
+};
+
+/** A ready-made head from a face package. It replaces the procedural shape. */
+export type FaceModel = {
+  /** Positions, normals and the animation weights aJaw, aMouth, aLip and aBrow. Optional uv. */
+  geometry: BufferGeometry;
+  /** Position and turn of the left and the right eye. */
+  eyes: { position: Vector3; quaternion: Quaternion }[];
+  /** Optional colors painted on the head, with alpha as coverage. Needs uv. */
+  paint: Texture | null;
 };
 
 export type Face = {
@@ -31,6 +46,14 @@ export type Face = {
   eyes: EyeStyle;
   /** Colors of a mushroom cap. Only for a shape with a cap. */
   cap?: { base: number; highlight: number; spots: number; spotSize: number };
+  /** 0 = flat facets, 1 = smooth surface. The default comes from the shape. */
+  smooth?: number;
+  /** How dark the closed mouth is, 0 to 1. The default is 0.55. */
+  mouthShade?: number;
+  /** Height where the cap starts, for a face model. A procedural face uses shape.cap.base. */
+  capY?: number;
+  /** A ready-made head from a face package. */
+  model?: FaceModel;
 };
 
 /** Up to this many spots on a cap. The shader has an array of this size. */
@@ -179,6 +202,7 @@ export const FACES: readonly Face[] = [
       glowWidth: 0.2,
       glowHeight: 0.22,
       white: { color: 0xfcfaf7, length: 0.145, height: 0.25 },
+      whiteFlat: 0.78,
     },
     cap: { base: 0x522612, highlight: 0xc97b52, spots: 0xd6b88e, spotSize: 0 },
   },
@@ -215,10 +239,23 @@ export const FACES: readonly Face[] = [
       glowWidth: 0.18,
       glowHeight: 0.18,
       white: { color: 0xfcfbf5, length: 0.082, height: 0.086 },
+      pupil: { inward: 0.04, down: 0 },
     },
   },
 ];
 
+/** Faces from the installed face packages. */
+let installed: readonly Face[] = [];
+
+export function setInstalledFaces(faces: readonly Face[]): void {
+  installed = faces;
+}
+
+/** The built-in faces, then the installed faces. */
+export function allFaces(): readonly Face[] {
+  return [...FACES, ...installed];
+}
+
 export function faceById(id: string | null | undefined): Face {
-  return FACES.find((f) => f.id === id) ?? FACES[0];
+  return allFaces().find((f) => f.id === id) ?? FACES[0];
 }

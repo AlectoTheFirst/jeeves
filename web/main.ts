@@ -1,33 +1,35 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { currentMonitor, getCurrentWindow, monitorFromPoint, primaryMonitor, UserAttentionType } from "@tauri-apps/api/window";
+import { LogicalSize, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
+import { characterFor, parseConfig, type Config } from "../sidecar/src/config.ts";
 import { encode, parseFromBrain, type AgentState, type FromBrain, type ToBrain } from "../sidecar/src/protocol.ts";
 import { MicRecorder } from "./audio/mic.ts";
 import { SpeechPlayer } from "./audio/player.ts";
-import { faceById, FACES } from "./scene/faces.ts";
+import { allFaces, faceById, setInstalledFaces, type Face } from "./scene/faces.ts";
+import { loadFacePackage } from "./scene/faceLoader.ts";
+import { isPackageFaceId, PACKAGE_PREFIX, packageFaceId } from "./scene/facePackage.ts";
 import { HeadScene } from "./scene/head.ts";
 import { HEAD_STATES } from "./scene/state.ts";
-import { toPlainText } from "./ui/plain.ts";
 import { RequestCards } from "./ui/requests.ts";
+import { fitInto, sameRect, type Rect } from "./ui/fit.ts";
+import { LogView } from "./ui/log.ts";
+import { SettingsView } from "./ui/settings.ts";
 import { Transcript } from "./ui/transcript.ts";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const status = $("status");
 const transcript = new Transcript($("transcript"));
-const FACE_KEY = "jeeves.face";
-function loadFaceId(): string | null {
-  // Browser preview: ?face=<id> picks a face.
-  const fromUrl = new URLSearchParams(location.search).get("face");
-  if (fromUrl) return fromUrl;
-  try {
-    return localStorage.getItem(FACE_KEY);
-  } catch {
-    return null;
-  }
-}
-const head = new HeadScene($<HTMLCanvasElement>("scene"), faceById(loadFaceId()));
+// Browser preview: ?face=<id> picks a face.
+const urlFace = new URLSearchParams(location.search).get("face");
+const head = new HeadScene($<HTMLCanvasElement>("scene"), faceById(urlFace));
 head.start();
 if (import.meta.env.DEV) document.body.classList.add("dev");
+// Name each source that the Content Security Policy blocks. In dev, Vite copies this to the terminal.
+document.addEventListener("securitypolicyviolation", (e) =>
+  console.warn(`[csp] blocked ${e.effectiveDirective}: ${e.blockedURI || "inline"} (${e.sourceFile}:${e.lineNumber})`),
+);
 
 function setStatus(text: string): void {
   status.textContent = text;
@@ -92,6 +94,8 @@ function onBrainMessage(msg: FromBrain): void {
     case "ready":
       setStatus("brain ready");
       void sendToBrain({ type: "ping", id: Date.now() });
+      // A restarted brain does not know the focus state.
+      void sendToBrain({ type: "focus", focused: windowFocused });
       break;
     case "pong":
       break;
@@ -119,8 +123,10 @@ function onBrainMessage(msg: FromBrain): void {
         setStatus(`hearing fault: ${msg.msg.slice(0, 120)}`);
         console.error(`[stt] ${msg.msg}`);
       } else if (line) {
-        if (msg.text) transcript.settle(line, msg.text);
-        else transcript.remove(line);
+        if (msg.text) {
+          transcript.settle(line, msg.text);
+          logView.add("user", msg.text);
+        } else transcript.remove(line);
       }
       restState();
       break;
@@ -136,33 +142,66 @@ function onBrainMessage(msg: FromBrain): void {
         fault: `fault: ${msg.msg}`,
       };
       setStatus(msg.msg && msg.state !== "fault" ? msg.msg : label[msg.state]);
+      if (msg.state === "fault") logView.add("fault", msg.msg);
       if (msg.project) projectInput.value = msg.project;
       restState();
       break;
     }
     case "agent_text":
-      transcript.add("head", toPlainText(msg.text));
+      // The full reply goes to the log only. The transcript gets the spoken summary.
+      logView.add("head", msg.text);
       break;
+    case "agent_said": {
+      lastHeadText = msg.text;
+      const line = transcript.add("head", msg.text);
+      if (msg.more) {
+        line.classList.add("more");
+        line.title = "Show the full answer in the log (L)";
+        line.addEventListener("click", () => openOverlay(logView));
+      }
+      break;
+    }
     case "agent_tool":
       if (msg.phrase) {
         transcript.add("tool", msg.phrase);
+        logView.add("tool", msg.phrase);
         setStatus(msg.phrase);
       }
       break;
     case "permission_request":
       cards.showPermission(msg.id, msg.text, msg.detail);
+      callAttention(msg.text, msg.detail, UserAttentionType.Critical);
       restState();
       break;
     case "question":
       cards.showQuestion(msg.id, msg.questions);
+      callAttention("A question for you", msg.questions[0]?.question ?? "", UserAttentionType.Critical);
       restState();
       break;
     case "request_closed":
       cards.close(msg.id);
       restState();
       break;
+    case "config":
+      applyConfig(msg.config, true);
+      settingsView.setKeys(msg.keys);
+      break;
+    case "voices":
+      settingsView.setVoices(msg.voices, msg.error);
+      break;
+    case "mcp_status":
+      settingsView.setMcpStatus(msg.servers, msg.error);
+      break;
     case "agent_result":
-      setStatus(`${msg.ok ? "done" : "failed"}: ${msg.turns} turns, $${msg.costUsd.toFixed(3)}`);
+      setStatus(`${msg.ok ? "done" : "failed"}: ${msg.turns} turns, $${msg.costUsd.toFixed(3)} this session`);
+      callAttention(msg.ok ? "Done" : "That did not work", lastHeadText || "The details are in the log.", UserAttentionType.Informational);
+      break;
+    case "projects":
+      recentProjects.replaceChildren(...msg.recent.map((p) => new Option(p, p)));
+      break;
+    case "cost":
+      logView.setCost(msg);
+      if (msg.blocked) setStatus("cost limit reached: see the log (L)");
       break;
   }
 }
@@ -176,11 +215,53 @@ async function connectBrain(): Promise<void> {
     const msg = parseFromBrain(event.payload);
     if (msg) onBrainMessage(msg);
   });
+  await listen<BrainExit>("brain-exit", (event) => onBrainExit(event.payload));
+  await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+    windowFocused = focused;
+    void sendToBrain({ type: "focus", focused }).catch(() => {});
+    if (focused) void getCurrentWindow().requestUserAttention(null);
+  });
   // The brain can be ready before the listener exists. Ask for its state directly too.
   await sendToBrain({ type: "ping", id: Date.now() });
 }
 
 connectBrain().catch((err) => setStatus(`brain fault: ${String(err)}`));
+
+// ---------------------------------------------------------------- brain restart
+
+type BrainExit = { code: number | null; restarting: boolean; delay_ms: number; attempt: number };
+
+/** The brain stopped. Its open requests, speech and pending transcripts are gone. */
+function onBrainExit(exit: BrainExit): void {
+  player.stop();
+  cards.closeAll();
+  for (const line of pendingTranscripts.values()) transcript.remove(line);
+  pendingTranscripts.clear();
+  agentState = "starting";
+  const text = exit.restarting
+    ? `brain stopped (code ${exit.code ?? "none"}), restart ${exit.attempt} in ${Math.round(exit.delay_ms / 1000)} s`
+    : `brain fault: it stopped ${exit.attempt} times in a row. Restart Jeeves.`;
+  setStatus(text);
+  logView.add("fault", text);
+  if (!exit.restarting) agentState = "fault";
+  restState();
+}
+
+// ---------------------------------------------------------------- attention
+
+let windowFocused = document.hasFocus();
+/** The last agent text, for the notification of a finished request. */
+let lastHeadText = "";
+
+/** Notify and bounce the Dock icon, as the settings say, if the window has no focus. */
+function callAttention(title: string, body: string, kind: UserAttentionType): void {
+  if (!isTauri() || windowFocused) return;
+  const name = characterFor(config).behavior.name;
+  if (config.attention.notify) {
+    void invoke("notify", { title: `${name}: ${title}`, body: body || title }).catch((e) => console.warn("notify", e));
+  }
+  if (config.attention.bounce) void getCurrentWindow().requestUserAttention(kind);
+}
 
 // ---------------------------------------------------------------- push-to-talk
 
@@ -191,7 +272,19 @@ let wantListening = false;
 const mic = new MicRecorder({
   onLevel: (value) => head.setListenLevel(value),
   onMaxLength: () => void stopListening(),
+  // A mic that was idle can need some time to give sound. Show "listening" only then.
+  onLive: (wakeMs) => {
+    if (wakeMs > 0 && wantListening && mic.isRecording) showListening(wakeMs);
+  },
 });
+
+// Open the mic early: at the start, and again at the first click (a browser can need
+// a user action to start audio). The mic stalls for about 1 s when it opens.
+if (isTauri()) {
+  const warmUp = () => void mic.warmUp().catch((err) => console.warn(`[mic] warm-up: ${String(err)}`));
+  warmUp();
+  window.addEventListener("pointerdown", warmUp, { once: true });
+}
 
 async function startListening(): Promise<void> {
   wantListening = true;
@@ -207,11 +300,17 @@ async function startListening(): Promise<void> {
       restState();
       return;
     }
-    head.setState("listening");
-    setStatus("listening");
+    if (mic.isLive) showListening(0);
+    else setStatus("mic starting, wait");
   } catch (err) {
     setStatus(`mic fault: ${String(err).slice(0, 120)}`);
   }
+}
+
+function showListening(wakeMs: number): void {
+  head.setState("listening");
+  setStatus(wakeMs > 0 ? `listening (the mic needed ${wakeMs} ms to start)` : "listening");
+  if (wakeMs > 0) console.info(`[mic] live after ${wakeMs} ms`);
 }
 
 async function stopListening(): Promise<void> {
@@ -253,16 +352,32 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (isTyping(e)) return;
-  if (e.key === "Escape") {
+  // A letter shortcut must not also type its letter into a field that it focuses.
+  const isShortcut = !e.metaKey && !e.ctrlKey && !e.altKey && [",", "l", "s", "f", "t"].includes(e.key);
+  if (isShortcut) e.preventDefault();
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const openOverlayView = overlays.find((o) => o.isOpen);
+  if (e.key === "Escape" && openOverlayView) {
+    closeOverlay(openOverlayView);
+  } else if (e.key === ",") {
+    toggleSettings();
+  } else if (e.key === "l") {
+    toggleLog();
+  } else if (e.key === "Escape") {
     stopSpeech();
     void sendToBrain({ type: "interrupt" });
   } else if (e.key === "s") {
     togglePanel();
   } else if (e.key === "f") {
-    const index = FACES.indexOf(head.getFace());
-    chooseFace(FACES[(index + 1) % FACES.length].id);
+    const faces = allFaces();
+    const index = faces.findIndex((f) => f.id === head.getFace().id);
+    const face = faces[(index + 1) % faces.length];
+    updateConfig({ ...config, face: face.id });
+    setStatus(`face: ${face.name} (${characterFor(config).behavior.name})`);
   } else if (e.key === "t") {
-    setStatus(transcript.togglePinned() ? "transcript: always show" : "transcript: hide after 10 s");
+    const pinned = !config.look.transcriptPinned;
+    updateConfig({ ...config, look: { ...config.look, transcriptPinned: pinned } });
+    setStatus(pinned ? "transcript: always show" : `transcript: hide after ${config.look.transcriptHideSeconds} s`);
   }
 });
 window.addEventListener("keyup", (e) => {
@@ -278,7 +393,14 @@ window.addEventListener("blur", () => void stopListening());
 const panel = $<HTMLFormElement>("panel");
 const projectInput = $<HTMLInputElement>("project");
 const textInput = $<HTMLTextAreaElement>("text");
-const glitch = $<HTMLInputElement>("glitch");
+
+function hidePanel(): void {
+  clearTimeout(panelFadeTimer);
+  panel.hidden = true;
+  panel.classList.remove("fading");
+  // Give the keys back to the head, so that Space is push-to-talk.
+  if (panel.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
+}
 
 function togglePanel(): void {
   panel.hidden = !panel.hidden;
@@ -290,7 +412,7 @@ function togglePanel(): void {
 }
 
 // The panel fades away after some time with no activity. S shows it again.
-const PANEL_IDLE_MS = 5000;
+let panelIdleMs = 5000;
 const PANEL_FADE_MS = 400;
 let panelFadeTimer: number | undefined;
 
@@ -298,7 +420,7 @@ function armPanelFade(): void {
   clearTimeout(panelFadeTimer);
   panel.classList.remove("fading");
   if (panel.hidden) return;
-  panelFadeTimer = window.setTimeout(fadePanel, PANEL_IDLE_MS);
+  panelFadeTimer = window.setTimeout(fadePanel, panelIdleMs);
 }
 
 function fadePanel(): void {
@@ -320,6 +442,19 @@ for (const event of ["input", "keydown", "pointermove", "focusin"]) {
   panel.addEventListener(event, armPanelFade);
 }
 
+const recentProjects = $<HTMLDataListElement>("recent-projects");
+
+$("project-browse").addEventListener("click", async () => {
+  if (!isTauri()) return;
+  const path = await invoke<string | null>("pick_folder").catch((e) => {
+    setStatus(`folder chooser fault: ${String(e).slice(0, 120)}`);
+    return null;
+  });
+  if (!path) return;
+  projectInput.value = path;
+  $("project-set").click();
+});
+
 $("project-set").addEventListener("click", () => {
   const path = projectInput.value.trim();
   if (!path) return;
@@ -331,8 +466,11 @@ projectInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
     $("project-set").click();
+  } else if (e.key === "Escape") {
+    hidePanel();
   }
 });
+$("panel-close").addEventListener("click", () => hidePanel());
 
 panel.addEventListener("submit", (e) => {
   e.preventDefault();
@@ -340,16 +478,17 @@ panel.addEventListener("submit", (e) => {
   if (!text) return;
   player.unlock();
   transcript.add("user", text);
+  logView.add("user", text);
   textInput.value = "";
   void sendToBrain({ type: "user_text", text });
 });
 textInput.addEventListener("keydown", (e) => {
-  // Enter sends. Shift+Enter makes a new line. Escape leaves the text box.
+  // Enter sends. Shift+Enter makes a new line. Escape closes the panel.
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     panel.requestSubmit();
   } else if (e.key === "Escape") {
-    textInput.blur();
+    hidePanel();
   }
 });
 
@@ -364,31 +503,250 @@ $("stop").addEventListener("click", () => {
   stopSpeech();
   void sendToBrain({ type: "interrupt" });
 });
-const faceSelect = $<HTMLSelectElement>("face");
-for (const face of FACES) faceSelect.add(new Option(face.name, face.id));
-faceSelect.value = head.getFace().id;
+$("open-settings").addEventListener("click", () => toggleSettings());
+$("open-log").addEventListener("click", () => toggleLog());
 
-function chooseFace(id: string): void {
-  const face = faceById(id);
-  head.setFace(face);
-  faceSelect.value = face.id;
-  setStatus(`face: ${face.name}`);
+// ---------------------------------------------------------------- configuration
+
+/** The brain owns the config. In the browser preview, it lives here only. */
+let config: Config = parseConfig(urlFace ? { face: urlFace } : undefined);
+let windowSizeRestored = false;
+
+const settingsView = new SettingsView($("settings"), allFaces(), {
+  change: (next) => updateConfig(next),
+  testVoice: (text) => {
+    player.unlock();
+    player.stop();
+    void sendToBrain({ type: "speak", id: nextSpeechId++, text });
+  },
+  refreshVoices: () => void sendToBrain({ type: "list_voices" }),
+  refreshMcp: () => void sendToBrain({ type: "list_mcp" }),
+  installFace: () => void installFace(),
+  removeFace: (faceId) => void removeFace(faceId),
+  close: () => closeOverlay(settingsView),
+});
+
+const logView = new LogView($("log"), {
+  resetCost: () => void sendToBrain({ type: "reset_cost" }),
+  close: () => closeOverlay(logView),
+});
+
+// ---------------------------------------------------------------- face packages
+
+void loadInstalledFaces();
+
+/** The package ids of the last load, to skip a load when nothing changed. */
+let loadedFaceIds: string | null = null;
+
+/**
+ * Load the installed face packages. A bad package is skipped and named in the settings.
+ * With `ifChanged`, load only if the list of package files changed.
+ */
+async function loadInstalledFaces(ifChanged = false): Promise<void> {
+  if (!isTauri()) return;
+  let ids: string[];
   try {
-    localStorage.setItem(FACE_KEY, face.id);
-  } catch {
-    // The choice then lasts for this session only.
+    ids = await invoke<string[]>("face_list");
+  } catch (err) {
+    settingsView.setFaceNote(`Face packages: ${String(err)}`);
+    return;
+  }
+  if (ifChanged && ids.join(",") === loadedFaceIds) return;
+  loadedFaceIds = ids.join(",");
+  const faces: Face[] = [];
+  const faults: string[] = [];
+  for (const id of ids) {
+    try {
+      const bytes = await invoke<ArrayBuffer>("face_read", { id });
+      faces.push((await loadFacePackage(bytes)).face);
+    } catch (err) {
+      faults.push(`${id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  const old = allFaces().filter((f) => f.model);
+  setInstalledFaces(faces);
+  for (const f of old) {
+    f.model?.geometry.dispose();
+    f.model?.paint?.dispose();
+  }
+  for (const fault of faults) logView.add("fault", `Face package ${fault}`);
+  settingsView.setFaces(allFaces());
+  settingsView.setFaceNote(faults.length > 0 ? `${faults.length} face package(s) could not load. Details: L` : "");
+  // The saved face can be a package face that was not loaded before.
+  const face = faceById(config.face);
+  if (head.getFace().id !== face.id || old.some((f) => f.id === face.id)) head.setFace(face);
+  settingsView.show(config);
+}
+
+async function installFace(): Promise<void> {
+  try {
+    const id = await invoke<string | null>("face_install");
+    if (!id) return;
+    await loadInstalledFaces();
+    const faceId = packageFaceId(id);
+    if (!allFaces().some((f) => f.id === faceId)) {
+      setStatus(`face ${id} is installed, but it could not load`);
+      return;
+    }
+    updateConfig({ ...config, face: faceId });
+    setStatus(`face installed: ${faceById(faceId).name}`);
+  } catch (err) {
+    settingsView.setFaceNote(`Install failed: ${String(err)}`);
   }
 }
-faceSelect.addEventListener("change", () => chooseFace(faceSelect.value));
 
-glitch.addEventListener("input", () => {
-  $("glitch-value").textContent = glitch.value;
-  player.setGlitchLevel(Number(glitch.value) / 100);
+async function removeFace(faceId: string): Promise<void> {
+  if (!isPackageFaceId(faceId)) return;
+  const name = faceById(faceId).name;
+  try {
+    await invoke("face_remove", { id: faceId.slice(PACKAGE_PREFIX.length) });
+  } catch (err) {
+    settingsView.setFaceNote(`Remove failed: ${String(err)}`);
+    return;
+  }
+  if (config.face === faceId) updateConfig({ ...config, face: "host" });
+  await loadInstalledFaces();
+  setStatus(`face removed: ${name}`);
+}
+
+// ---------------------------------------------------------------- overlays
+
+/** A full-window view: the settings or the log. Only 1 is open at a time. */
+type Overlay = { readonly isOpen: boolean; open(): void; close(): void };
+const overlays: Overlay[] = [settingsView, logView];
+const anyOverlayOpen = () => overlays.some((o) => o.isOpen);
+
+function toggleSettings(): void {
+  if (settingsView.isOpen) closeOverlay(settingsView);
+  else openSettings();
+}
+
+/** Open the settings. A face that was installed with the face tools shows at once. */
+function openSettings(): void {
+  openOverlay(settingsView);
+  void loadInstalledFaces(true);
+}
+
+function toggleLog(): void {
+  if (logView.isOpen) closeOverlay(logView);
+  else openOverlay(logView);
+}
+
+// At a screen border, a part of the window can be off the screen. An overlay fills
+// the window, so its Close button can be off the screen too. While an overlay is
+// open, the window moves (and if necessary shrinks) into the work area of its monitor.
+let rectBeforeSettings: Rect | null = null;
+let rectForSettings: Rect | null = null;
+let windowMove: Promise<void> = Promise.resolve();
+
+function openOverlay(view: Overlay): void {
+  for (const other of overlays) if (other !== view) other.close();
+  view.open();
+  if (isTauri()) windowMove = windowMove.then(fitWindowForSettings).catch((e) => console.warn("overlay fit", e));
+}
+
+function closeOverlay(view: Overlay): void {
+  view.close();
+  if (isTauri()) windowMove = windowMove.then(restoreWindowAfterSettings).catch((e) => console.warn("overlay restore", e));
+}
+
+async function windowRect(): Promise<Rect> {
+  const win = getCurrentWindow();
+  const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()]);
+  return { x: pos.x, y: pos.y, width: size.width, height: size.height };
+}
+
+async function fitWindowForSettings(): Promise<void> {
+  if (!anyOverlayOpen() || rectBeforeSettings) return;
+  const win = getCurrentWindow();
+  const rect = await windowRect();
+  const monitor =
+    (await currentMonitor()) ??
+    (await monitorFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)) ??
+    (await primaryMonitor());
+  if (!monitor) return;
+  const area = monitor.workArea;
+  const fit = fitInto(rect, { x: area.position.x, y: area.position.y, width: area.size.width, height: area.size.height });
+  if (sameRect(fit, rect)) return;
+  rectBeforeSettings = rect;
+  rectForSettings = fit;
+  if (fit.width !== rect.width || fit.height !== rect.height) await win.setSize(new PhysicalSize(fit.width, fit.height));
+  await win.setPosition(new PhysicalPosition(fit.x, fit.y));
+}
+
+/** Put the window back, but not if the user moved or resized it while the settings were open. */
+async function restoreWindowAfterSettings(): Promise<void> {
+  const rect = rectBeforeSettings;
+  if (!rect || anyOverlayOpen()) return;
+  const moved = !rectForSettings || !sameRect(await windowRect(), rectForSettings);
+  rectBeforeSettings = rectForSettings = null;
+  if (moved) {
+    saveWindowSize();
+    return;
+  }
+  const win = getCurrentWindow();
+  await win.setPosition(new PhysicalPosition(rect.x, rect.y));
+  await win.setSize(new PhysicalSize(rect.width, rect.height));
+}
+
+/** Use a config in the window: face, glitch, backdrop, transcript, panel and size. */
+function applyConfig(next: Config, fromBrain = false): void {
+  config = next;
+  const face = faceById(next.face);
+  if (head.getFace().id !== face.id) head.setFace(face);
+  player.setGlitchLevel(characterFor(next).voice.glitch / 100);
+  head.setBackdrop(next.look.backdrop);
+  transcript.configure(next.look.transcriptPinned, next.look.transcriptHideSeconds);
+  panelIdleMs = next.look.panelHideSeconds * 1000;
+  settingsView.show(next);
+  logView.setName(characterFor(next).behavior.name);
+  // Restore the saved window size once, when the brain first sends the config.
+  if (fromBrain && !windowSizeRestored) {
+    windowSizeRestored = true;
+    const { windowWidth: w, windowHeight: h } = next.look;
+    if (w > 0 && h > 0 && (w !== window.innerWidth || h !== window.innerHeight)) {
+      void getCurrentWindow().setSize(new LogicalSize(w, h));
+    }
+  }
+}
+
+/** Change the config: use it now and send it to the brain, which saves it. */
+function updateConfig(next: Config): void {
+  applyConfig(next);
+  if (isTauri()) void sendToBrain({ type: "set_config", config: next });
+}
+
+applyConfig(config);
+// Browser preview: ?settings opens the settings view.
+if (new URLSearchParams(location.search).has("settings")) openOverlay(settingsView);
+if (new URLSearchParams(location.search).has("log")) openOverlay(logView);
+
+// ---------------------------------------------------------------- window size
+
+$("resize-grip").addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  if (isTauri()) void getCurrentWindow().startResizeDragging("SouthEast");
 });
+
+// Save the size when the user stops resizing.
+let resizeTimer: number | undefined;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  // A shrink for the settings view is not a size to keep.
+  resizeTimer = window.setTimeout(() => rectBeforeSettings || saveWindowSize(), 800);
+});
+
+function saveWindowSize(): void {
+  if (!windowSizeRestored) return;
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  if (w === config.look.windowWidth && h === config.look.windowHeight) return;
+  updateConfig({ ...config, look: { ...config.look, windowWidth: w, windowHeight: h } });
+}
 
 // ---------------------------------------------------------------- dev keys
 
-// 1-5: state   G: glitch   B: backdrop
+// 1-5: state   G: glitch   B: backdrop (saved)
 if (import.meta.env.DEV) {
   window.addEventListener("keydown", (e) => {
     if (isTyping(e)) return;
@@ -399,7 +757,7 @@ if (import.meta.env.DEV) {
     } else if (e.key === "g") {
       head.glitch(1, 400);
     } else if (e.key === "b") {
-      head.setBackdrop(!head.backdropOn);
+      updateConfig({ ...config, look: { ...config.look, backdrop: !config.look.backdrop } });
     }
   });
 }

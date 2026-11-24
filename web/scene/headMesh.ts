@@ -22,8 +22,10 @@ const vertexShader = /* glsl */ `
   varying vec3 vNormal;
   varying vec3 vRest;
   varying float vMouth;
+  varying vec2 vUv;
 
   void main() {
+    vUv = uv;
     vec3 p = position;
     p.x *= 1.0 + aLip * (0.28 * uWide - 0.3 * uRound);
     p.z += aLip * 0.06 * uRound;
@@ -54,6 +56,10 @@ const fragmentShader = /* glsl */ `
   uniform float uJaw;
   uniform float uSmooth;
   uniform float uTotoro;
+  uniform float uCrease;
+  uniform sampler2D uPaint;
+  uniform float uHasPaint;
+  uniform float uMouthShade;
   uniform vec3 uBase;
   uniform vec3 uHighlight;
   uniform vec3 uRim;
@@ -70,6 +76,7 @@ const fragmentShader = /* glsl */ `
   varying vec3 vNormal;
   varying vec3 vRest;
   varying float vMouth;
+  varying vec2 vUv;
 
   float chevron(vec2 p, vec2 c) {
     vec2 d = p - c;
@@ -123,6 +130,13 @@ const fragmentShader = /* glsl */ `
         color = mix(color, cream, belly);
       }
     }
+    // Paint from a face package: the color at full light, with alpha as coverage.
+    float painted = 0.0;
+    if (uHasPaint > 0.5 && vMouth >= -0.2) {
+      vec4 paint = texture2D(uPaint, vUv);
+      color = mix(color, paint.rgb * mix(0.55, 1.0, diffuse), paint.a);
+      painted = paint.a;
+    }
     if (vMouth < -3.5) {
       color = mix(vec3(0.11, 0.28, 0.09), vec3(0.38, 0.68, 0.22), light);
     } else if (vMouth < -2.5) {
@@ -140,7 +154,8 @@ const fragmentShader = /* glsl */ `
 
     // Inside of the mouth: dark, more so when the jaw is open.
     float open = clamp(uJaw * 4.0, 0.0, 1.0);
-    float mouthDark = smoothstep(0.1, 0.6, max(vMouth, 0.0)) * (0.55 + 0.45 * open);
+    // uMouthShade: how dark the closed mouth is.
+    float mouthDark = smoothstep(0.1, 0.6, max(vMouth, 0.0)) * mix(uMouthShade, 1.0, open);
     if (uTotoro > 0.5 && vMouth >= -0.2 && vRest.z > 0.35) {
       // Wide crescent toothy grin with 6 white teeth separated by vertical lines.
       float gx = vRest.x;
@@ -155,13 +170,14 @@ const fragmentShader = /* glsl */ `
         color = mix(color, tooth, inGrin);
         mouthDark = 0.0;
       }
-    } else if (uSmooth > 0.5 && vMouth >= -0.2 && vRest.z > 0.4) {
+    } else if (uCrease > 0.5 && vMouth >= -0.2 && vRest.z > 0.4) {
       // Wide gentle frown crease between the two tusks when closed, opening cleanly with uJaw.
       float frownY = -0.22 - 0.65 * vRest.x * vRest.x;
       float line = (1.0 - smoothstep(0.007, 0.02, abs(vRest.y - frownY))) * (1.0 - smoothstep(0.34, 0.38, abs(vRest.x)));
       mouthDark = max(mouthDark * open, line * 0.88);
     }
-    color = mix(color, vec3(0.05, 0.01, 0.01), mouthDark);
+    // Paint covers the mouth shade, for example painted teeth.
+    color = mix(color, vec3(0.05, 0.01, 0.01), mouthDark * (1.0 - painted));
 
     gl_FragColor = vec4(color, 1.0);
   }
@@ -175,6 +191,10 @@ export type HeadUniforms = {
   uBrow: { value: number };
   uSmooth: { value: number };
   uTotoro: { value: number };
+  uCrease: { value: number };
+  uPaint: { value: THREE.Texture | null };
+  uHasPaint: { value: number };
+  uMouthShade: { value: number };
   uHinge: { value: THREE.Vector3 };
   uBase: { value: THREE.Color };
   uHighlight: { value: THREE.Color };
@@ -464,11 +484,11 @@ function buildEyes(face: Face): Eyes {
   const specMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
   const coreGeometry = new THREE.SphereGeometry(1, 24, 12);
   const whiteGeometry = new THREE.SphereGeometry(1, 28, 16);
-  if (style.white && face.shape.tusks) {
+  if (style.white && style.whiteFlat !== undefined && style.whiteFlat !== 1) {
     const wp = whiteGeometry.getAttribute("position");
     for (let i = 0; i < wp.count; i++) {
       const wy = wp.getY(i);
-      if (wy < 0) wp.setY(i, wy * 0.78); // Gently flattened lower cheek edge.
+      if (wy < 0) wp.setY(i, wy * style.whiteFlat!); // Flatter lower edge.
     }
   }
   const glowMaterial = new THREE.ShaderMaterial({
@@ -483,19 +503,26 @@ function buildEyes(face: Face): Eyes {
   const glowGeometry = new THREE.PlaneGeometry(style.glowWidth, style.glowHeight);
 
   for (const [index, dir] of eyeDirs(face.shape).entries()) {
-    const anchor = shapeHead(dir, face.shape);
     const eye = new THREE.Group();
-    eye.position.set(anchor.x, anchor.y, anchor.z);
-    // Align a cartoon eye disc with the head surface slope so its bottom edge never clips into the cap.
-    if (style.white) {
-      const top = shapeHead(normalize({ x: dir.x, y: dir.y + 0.14, z: dir.z }), face.shape);
-      const bot = shapeHead(normalize({ x: dir.x, y: dir.y - 0.14, z: dir.z }), face.shape);
-      eye.rotation.x = Math.atan2(top.z - bot.z, top.y - bot.y);
-      eye.rotation.y = (index === 0 ? -1 : 1) * 0.16;
-      eye.position.z += style.white.length * 0.42;
+    const placed = face.model?.eyes[index];
+    if (placed) {
+      // A face model gives the final place and turn of each eye.
+      eye.position.copy(placed.position);
+      eye.quaternion.copy(placed.quaternion);
+    } else {
+      const anchor = shapeHead(dir, face.shape);
+      eye.position.set(anchor.x, anchor.y, anchor.z);
+      // Align a cartoon eye disc with the head surface slope so its bottom edge never clips into the cap.
+      if (style.white) {
+        const top = shapeHead(normalize({ x: dir.x, y: dir.y + 0.14, z: dir.z }), face.shape);
+        const bot = shapeHead(normalize({ x: dir.x, y: dir.y - 0.14, z: dir.z }), face.shape);
+        eye.rotation.x = Math.atan2(top.z - bot.z, top.y - bot.y);
+        eye.rotation.y = (index === 0 ? -1 : 1) * 0.16;
+        eye.position.z += style.white.length * 0.42;
+      }
+      // Turn the outer end of each slit up a little.
+      eye.rotation.z = (index === 0 ? -1 : 1) * style.tilt;
     }
-    // Turn the outer end of each slit up a little.
-    eye.rotation.z = (index === 0 ? -1 : 1) * style.tilt;
 
     const look = new THREE.Group();
     const bar = new THREE.Mesh(coreGeometry, core);
@@ -507,8 +534,8 @@ function buildEyes(face: Face): Eyes {
     back.position.z = -0.006;
     // The pupil sits in front of the eye white, in the lower-inner portion with a bright catchlight dot.
     if (style.white) {
-      const inward = face.shape.totoro ? 0.04 : 0.22;
-      const down = face.shape.totoro ? 0.0 : -0.15;
+      const inward = style.pupil?.inward ?? 0.22;
+      const down = -(style.pupil?.down ?? 0.15);
       bar.position.set((index === 0 ? 1 : -1) * style.white.length * inward, style.white.height * down, 0.014);
       const spec = new THREE.Mesh(coreGeometry, specMat);
       spec.scale.set(style.length * 0.34, style.height * 0.3, 0.01);
@@ -536,8 +563,12 @@ export function createHead(face: Face): { mesh: THREE.Mesh; uniforms: HeadUnifor
     uWide: { value: 0 },
     uRound: { value: 0 },
     uBrow: { value: 0 },
-    uSmooth: { value: face.shape.tusks || face.shape.totoro ? 0.9 : 0 },
-    uTotoro: { value: face.shape.totoro ? 1 : 0 },
+    uSmooth: { value: face.smooth ?? (face.shape.tusks || face.shape.totoro ? 0.9 : 0) },
+    uTotoro: { value: !face.model && face.shape.totoro ? 1 : 0 },
+    uCrease: { value: !face.model && face.shape.tusks ? 1 : 0 },
+    uPaint: { value: face.model?.paint ?? null },
+    uHasPaint: { value: face.model?.paint ? 1 : 0 },
+    uMouthShade: { value: face.mouthShade ?? 0.55 },
     uHinge: { value: new THREE.Vector3(JAW_HINGE.x, JAW_HINGE.y, JAW_HINGE.z) },
     uBase: { value: new THREE.Color(c.base) },
     uHighlight: { value: new THREE.Color(c.highlight) },
@@ -545,7 +576,7 @@ export function createHead(face: Face): { mesh: THREE.Mesh; uniforms: HeadUnifor
     uRimPower: { value: 0.9 },
     uSweep: { value: 0 },
     uSweepColor: { value: new THREE.Color(c.sweep) },
-    uCapY: { value: face.shape.cap?.base ?? 9 },
+    uCapY: { value: face.capY ?? (face.model ? 9 : (face.shape.cap?.base ?? 9)) },
     uCapBase: { value: new THREE.Color(cap?.base ?? 0) },
     uCapHighlight: { value: new THREE.Color(cap?.highlight ?? 0) },
     uSpotColor: { value: new THREE.Color(cap?.spots ?? 0) },
@@ -553,7 +584,9 @@ export function createHead(face: Face): { mesh: THREE.Mesh; uniforms: HeadUnifor
     uSpots: { value: spotDirs().map(([x, y, z]) => new THREE.Vector3(x, y, z)) },
   };
   const material = new THREE.ShaderMaterial({ vertexShader, fragmentShader, uniforms });
-  const mesh = new THREE.Mesh(buildGeometry(face.shape), material);
+  // A face model is cloned, because a face change disposes the old geometry.
+  const geometry = face.model ? face.model.geometry.clone() : buildGeometry(face.shape);
+  const mesh = new THREE.Mesh(geometry, material);
   // The jaw moves in the vertex shader, so the default bounds can be too small.
   mesh.frustumCulled = false;
   return { mesh, uniforms, eyes: buildEyes(face) };

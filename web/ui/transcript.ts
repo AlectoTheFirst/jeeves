@@ -2,22 +2,16 @@
 // short tool lines. It scrolls and keeps the last lines only.
 
 const MAX_LINES = 30;
-/** Without new lines for this time, the transcript fades away, unless it is pinned. */
-const HIDE_AFTER_MS = 10_000;
-const PIN_KEY = "jeeves.transcript.pinned";
 
 export type Speaker = "user" | "head" | "tool";
 
 export class Transcript {
   private hideTimer: number | undefined;
   private pinnedValue = false;
+  /** Without new lines for this time, the transcript fades away, unless it is pinned. */
+  private hideAfterMs = 10_000;
 
   constructor(private root: HTMLElement) {
-    try {
-      this.pinnedValue = localStorage.getItem(PIN_KEY) === "1";
-    } catch {
-      // No storage: start in auto-hide mode.
-    }
     root.addEventListener("pointerenter", () => this.show());
     root.addEventListener("pointerleave", () => this.show());
   }
@@ -26,16 +20,12 @@ export class Transcript {
     return this.pinnedValue;
   }
 
-  /** Switch between always visible and auto-hide. Returns the new mode. */
-  togglePinned(): boolean {
-    this.pinnedValue = !this.pinnedValue;
-    try {
-      localStorage.setItem(PIN_KEY, this.pinnedValue ? "1" : "0");
-    } catch {
-      // The mode then lasts for this session only.
-    }
-    this.show();
-    return this.pinnedValue;
+  /** Pinned = always visible. Otherwise it hides after `hideSeconds` without new lines. */
+  configure(pinned: boolean, hideSeconds: number): void {
+    const changed = pinned !== this.pinnedValue || hideSeconds * 1000 !== this.hideAfterMs;
+    this.pinnedValue = pinned;
+    this.hideAfterMs = hideSeconds * 1000;
+    if (changed) this.show();
   }
 
   /** Show the transcript now, and start the hide timer again. */
@@ -46,7 +36,7 @@ export class Transcript {
     this.hideTimer = window.setTimeout(() => {
       if (this.root.matches(":hover")) this.show();
       else this.root.classList.add("faded");
-    }, HIDE_AFTER_MS);
+    }, this.hideAfterMs);
   }
 
   /** Add a line. Returns it, so that a pending line can change later. */

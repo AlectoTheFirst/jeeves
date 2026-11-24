@@ -7,38 +7,14 @@ import { join } from "node:path";
 import {
   query,
   type CanUseTool,
+  type McpServerStatus,
   type PermissionResult,
   type Query,
   type SDKMessage,
-  type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { SPOKEN_MARKER } from "./spoken.ts";
-
-export const AGENT_MODEL = "claude-opus-5-5";
-
-/** Read-only tools run without a question. */
-const ALLOWED_TOOLS = ["Read", "Glob", "Grep"];
-
-const VOICE_PROMPT = `
-# Voice interface (required output format)
-
-You talk to the user through a voice interface: an animated retro TV-computer head
-on their desktop. The user speaks to you, and a speech-to-text step writes their words,
-so expect small transcription mistakes and ask if a request is unclear.
-
-REQUIRED: the first line of every final answer to the user must start with
-"${SPOKEN_MARKER}" followed by 1 to 3 short sentences that the head says aloud.
-This rule applies in addition to any output style or writing rules you follow, and it
-is never optional, also for short answers. The app removes that line from the screen
-and speaks it, so the rest of the answer must still make sense without it.
-
-The spoken line is plain speech: no markdown, no code, no file paths longer than a file
-name, no lists. It summarizes the outcome in a playful, witty TV-host tone, but never at
-the cost of accuracy. Put all detail, code and lists after that line.
-
-Example first line:
-${SPOKEN_MARKER} Found it! Your add function subtracts. One sign to flip and we are back in business.
-`.trim();
+import type { AgentHost, AgentMessage, BrainAgent } from "./types.ts";
+import { isProjectRead } from "./scope.ts";
+import { VOICE_PROMPT } from "./shared.ts";
 
 /** Where the Claude Code CLI is. The SDK's bundled binary cannot be found in a Bun single-file build. */
 export function findClaudeCli(): string | undefined {
@@ -58,32 +34,13 @@ function agentEnv(): Record<string, string | undefined> {
   return env;
 }
 
-export type PermissionAsk = {
-  tool: string;
-  input: Record<string, unknown>;
-  title?: string;
-  description?: string;
-  signal: AbortSignal;
-};
-
-export type AgentHost = {
-  /** Every message from the SDK. */
-  onMessage: (msg: SDKMessage) => void;
-  /** The session stopped because of a fault (not a normal end). */
-  onFault: (err: unknown) => void;
-  /** Ask the user. Resolve with the decision. */
-  askPermission: (ask: PermissionAsk) => Promise<boolean>;
-  /** Ask the user AskUserQuestion questions. Resolve with answers keyed by question text, or null to decline. */
-  askQuestions: (input: Record<string, unknown>, signal: AbortSignal) => Promise<Record<string, string> | null>;
-};
-
 /** A queue that the SDK reads as its prompt stream. */
-class InputQueue implements AsyncIterable<SDKUserMessage> {
-  private items: SDKUserMessage[] = [];
-  private waiting: ((r: IteratorResult<SDKUserMessage>) => void) | null = null;
+class InputQueue implements AsyncIterable<any> {
+  private items: any[] = [];
+  private waiting: ((r: IteratorResult<any>) => void) | null = null;
   private closed = false;
 
-  push(item: SDKUserMessage): void {
+  push(item: any): void {
     if (this.closed) return;
     if (this.waiting) {
       const resolve = this.waiting;
@@ -100,7 +57,7 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
     this.waiting = null;
   }
 
-  [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
+  [Symbol.asyncIterator](): AsyncIterator<any> {
     return {
       next: () => {
         const item = this.items.shift();
@@ -112,7 +69,58 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
   }
 }
 
-export class AgentSession {
+export type ClaudeCodeOptions = {
+  model: string;
+  persona: string;
+  mcpServers: Record<string, any>;
+  strictMcpConfig: boolean;
+  trustedTools: string[];
+};
+
+function sdkMessageToAgentMessage(msg: SDKMessage): AgentMessage | null {
+  switch (msg.type) {
+    case "system":
+      if (msg.subtype === "init") {
+        return { type: "system", subtype: "init", session_id: msg.session_id };
+      }
+      return null;
+    case "assistant": {
+      const content: Extract<AgentMessage, { type: "assistant" }>["message"]["content"] = [];
+      for (const block of msg.message.content) {
+        if (block.type === "text") {
+          content.push({ type: "text", text: block.text });
+        } else if (block.type === "tool_use") {
+          content.push({
+            type: "tool_use",
+            name: block.name,
+            input: block.input as Record<string, unknown>,
+            id: block.id,
+          });
+        }
+      }
+      return {
+        type: "assistant",
+        parent_tool_use_id: msg.parent_tool_use_id ?? null,
+        message: { role: "assistant", content },
+      };
+    }
+    case "result":
+      return {
+        type: "result",
+        subtype: msg.subtype === "success" ? "success" : "error",
+        is_error: msg.is_error,
+        result: msg.subtype === "success" ? msg.result : "",
+        // Keep the SDK fault kind, for example error_max_turns, if the SDK gives no text.
+        errors: msg.subtype !== "success" && msg.errors.length > 0 ? msg.errors : msg.subtype === "success" ? [] : [msg.subtype],
+        total_cost_usd: msg.total_cost_usd,
+        num_turns: msg.num_turns,
+      };
+    default:
+      return null;
+  }
+}
+
+export class ClaudeCodeAgent implements BrainAgent {
   private input = new InputQueue();
   private q: Query | null = null;
   private running = false;
@@ -121,6 +129,13 @@ export class AgentSession {
     readonly cwd: string,
     private host: AgentHost,
     private resumeId?: string,
+    private options: ClaudeCodeOptions = {
+      model: "claude-opus-5-5",
+      persona: "",
+      mcpServers: {},
+      strictMcpConfig: false,
+      trustedTools: [],
+    },
   ) {}
 
   get isRunning(): boolean {
@@ -137,6 +152,8 @@ export class AgentSession {
           ? { behavior: "allow", updatedInput: { ...input, answers } }
           : { behavior: "deny", message: "The user did not answer the question." };
       }
+      // Reads in the project folder need no question. A read outside it gets a card.
+      if (isProjectRead(tool, input, this.cwd)) return { behavior: "allow" };
       const allowed = await this.host.askPermission({
         tool,
         input,
@@ -151,11 +168,19 @@ export class AgentSession {
       prompt: this.input,
       options: {
         cwd: this.cwd,
-        model: AGENT_MODEL,
-        allowedTools: ALLOWED_TOOLS,
+        model: this.options.model,
+        // No read tools here: an allowedTools entry approves a tool before canUseTool
+        // can check the path.
+        allowedTools: this.options.trustedTools,
+        mcpServers: this.options.mcpServers,
+        strictMcpConfig: this.options.strictMcpConfig,
         canUseTool,
         resume: this.resumeId,
-        systemPrompt: { type: "preset", preset: "claude_code", append: VOICE_PROMPT },
+        systemPrompt: {
+          type: "preset",
+          preset: "claude_code",
+          append: this.options.persona ? `${VOICE_PROMPT}\n\n${this.options.persona}` : VOICE_PROMPT,
+        },
         pathToClaudeCodeExecutable: findClaudeCli(),
         env: agentEnv(),
       },
@@ -163,7 +188,10 @@ export class AgentSession {
 
     void (async () => {
       try {
-        for await (const msg of this.q!) this.host.onMessage(msg);
+        for await (const msg of this.q!) {
+          const agentMsg = sdkMessageToAgentMessage(msg);
+          if (agentMsg) this.host.onMessage(agentMsg);
+        }
       } catch (err) {
         this.host.onFault(err);
       } finally {
@@ -179,6 +207,11 @@ export class AgentSession {
       parent_tool_use_id: null,
       origin: { kind: "human" },
     });
+  }
+
+  async mcpStatus(): Promise<McpServerStatus[]> {
+    if (!this.q) return [];
+    return this.q.mcpServerStatus();
   }
 
   async interrupt(): Promise<void> {

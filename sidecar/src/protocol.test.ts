@@ -57,3 +57,42 @@ describe("parseFromBrain", () => {
     expect(parseFromBrain('{"type":"log","level":"debug","msg":"x"}')).toBeNull();
   });
 });
+
+describe("config messages", () => {
+  it("round-trips config and voices, and checks set_config", async () => {
+    const { DEFAULT_CONFIG } = await import("./config.ts");
+    const config = { type: "config", config: DEFAULT_CONFIG, keys: { elevenlabs: true, anthropic: false } } as const;
+    expect(parseFromBrain(encode(config))).toEqual(config);
+    const voices = { type: "voices", voices: [{ id: "a1", name: "Ann", category: "premade" }], error: "" } as const;
+    expect(parseFromBrain(encode(voices))).toEqual(voices);
+    const set = parseToBrain(JSON.stringify({ type: "set_config", config: { face: "../x" } }));
+    expect(set?.type === "set_config" && set.config.face).toBe("host");
+    expect(parseToBrain('{"type":"list_voices"}')).toEqual({ type: "list_voices" });
+  });
+
+  it("round-trips the MCP status", () => {
+    expect(parseToBrain('{"type":"list_mcp"}')).toEqual({ type: "list_mcp" });
+    const status = {
+      type: "mcp_status",
+      servers: [{ name: "home-assistant", status: "connected", source: "user", error: "", tools: 12 }],
+      error: "",
+    } as const;
+    expect(parseFromBrain(encode(status))).toEqual(status);
+    expect(parseFromBrain('{"type":"mcp_status","servers":[{"name":1}],"error":""}')).toBeNull();
+  });
+
+  it("round-trips focus, cost and projects", () => {
+    expect(parseToBrain('{"type":"focus","focused":false}')).toEqual({ type: "focus", focused: false });
+    expect(parseToBrain('{"type":"focus","focused":"no"}')).toBeNull();
+    expect(parseToBrain('{"type":"reset_cost"}')).toEqual({ type: "reset_cost" });
+    const said = { type: "agent_said", text: "All done.", more: true } as const;
+    expect(parseFromBrain(encode(said))).toEqual(said);
+    expect(parseFromBrain('{"type":"agent_said","text":"x"}')).toBeNull();
+    const cost = { type: "cost", spentUsd: 1.25, budgetUsd: 5, requests: 3, since: 1_700_000_000_000, blocked: false } as const;
+    expect(parseFromBrain(encode(cost))).toEqual(cost);
+    expect(parseFromBrain('{"type":"cost","spentUsd":"1"}')).toBeNull();
+    const projects = { type: "projects", recent: ["/a", "/b"] } as const;
+    expect(parseFromBrain(encode(projects))).toEqual(projects);
+    expect(parseFromBrain('{"type":"projects","recent":[1]}')).toBeNull();
+  });
+});

@@ -62,14 +62,20 @@ export function toolPhrase(tool: string, input: Record<string, unknown>): string
       return "Looking on the web.";
     case "Agent":
       return "Sending a helper agent.";
-    default:
-      return "";
+    default: {
+      // MCP tools: "mcp__<server>__<tool>".
+      const mcp = /^mcp__(.+?)__(.+)$/.exec(tool);
+      if (!mcp) return "";
+      const words = (s: string) => s.replace(/[_-]+/g, " ").trim();
+      return `Using ${words(mcp[2])} from ${words(mcp[1])}.`;
+    }
   }
 }
 
 /** The spoken permission question. Uses the SDK's own sentence when it has one. */
 export function permissionQuestion(tool: string, input: Record<string, unknown>, title?: string): string {
-  if (title) return `${toSpeakable(title)}. Allow?`;
+  // The head speaks as its character, so "Claude wants" becomes "I want".
+  if (title) return `${toSpeakable(title).replace(/^Claude( Code)? wants\b/i, "I want")}. Allow?`;
   const phrase = toolPhrase(tool, input).replace(/\.$/, "");
-  return phrase ? `Claude wants to do this: ${phrase}. Allow?` : `Claude wants to use ${tool}. Allow?`;
+  return phrase ? `I want to do this: ${phrase}. Allow?` : `I want to use ${tool}. Allow?`;
 }

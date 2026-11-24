@@ -2,6 +2,9 @@
 name = "jeeves"
 version = "0.1.0"
 edition = "2021"
+description = "A desktop assistant with a 3D head that talks to a coding agent"
+license = "MIT"
+authors = ["Starkweb <126573706+AlectoTheFirst@users.noreply.github.com>"]
 
 [lib]
 name = "jeeves_lib"

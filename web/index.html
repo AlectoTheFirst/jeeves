@@ -13,17 +13,22 @@
     <div id="status">starting</div>
     <form id="panel" hidden>
       <label class="stack">project folder
-        <span class="row"><input id="project" type="text" placeholder="~/code/my-project" spellcheck="false" /><button type="button" id="project-set">Set</button></span>
+        <span class="row"><input id="project" type="text" list="recent-projects" placeholder="~/code/my-project" spellcheck="false" /><button type="button" id="project-browse" title="Choose a folder">Browse</button><button type="button" id="project-set">Set</button></span>
+        <datalist id="recent-projects"></datalist>
       </label>
       <textarea id="text" rows="3" placeholder="Type a request, or hold Space and speak."></textarea>
-      <label>glitch <input id="glitch" type="range" min="0" max="100" value="50" /> <span id="glitch-value">50</span></label>
-      <label>face <select id="face"></select></label>
       <div class="row">
         <button type="submit">Ask</button>
         <button type="button" id="speak" class="dev-only">Speak</button>
         <button type="button" id="stop">Stop</button>
+        <button type="button" id="open-log" title="The full conversation and the cost (L)">Log</button>
+        <button type="button" id="open-settings">Settings</button>
+        <button type="button" id="panel-close" title="Close the panel (Escape)">Close</button>
       </div>
     </form>
+    <div id="settings" class="overlay" hidden></div>
+    <div id="log" class="overlay" hidden></div>
+    <div id="resize-grip" title="Drag to resize"></div>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

@@ -39,6 +39,22 @@ export class TtsError extends Error {
   }
 }
 
+export type VoiceInfo = { id: string; name: string; category: string };
+
+/** The voices in the user's ElevenLabs account: own voices and added library voices. */
+export async function listVoices(apiKey: string, signal?: AbortSignal): Promise<VoiceInfo[]> {
+  const response = await fetch("https://api.elevenlabs.io/v1/voices", { headers: { "xi-api-key": apiKey }, signal });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new TtsError(`ElevenLabs voice list failed (${response.status}): ${detail.slice(0, 300)}`, response.status);
+  }
+  const body = (await response.json()) as { voices?: { voice_id?: unknown; name?: unknown; category?: unknown }[] };
+  return (body.voices ?? [])
+    .filter((v) => typeof v.voice_id === "string" && typeof v.name === "string")
+    .map((v) => ({ id: v.voice_id as string, name: v.name as string, category: typeof v.category === "string" ? v.category : "" }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export async function* streamSpeech(config: VoiceConfig, text: string, signal: AbortSignal): AsyncGenerator<TtsChunk> {
   const url =
     `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(config.voiceId)}` +

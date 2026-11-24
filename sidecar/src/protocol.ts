@@ -1,5 +1,6 @@
 // Messages between the webview (through the Rust core) and the sidecar brain.
 // Transport: 1 JSON object per line on the sidecar stdin and stdout.
+import { parseConfig, type Config } from "./config.ts";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -18,7 +19,32 @@ export type ToBrain =
   /** `answers`: option label for each question text, or null to decline. */
   | { type: "question_answer"; id: number; answers: Record<string, string> | null }
   | { type: "interrupt" }
-  | { type: "set_project"; path: string };
+  | { type: "set_project"; path: string }
+  /** The full config from the settings view. The brain checks it, saves it and sends it back. */
+  | { type: "set_config"; config: Config }
+  /** Ask for the voices in the user's ElevenLabs account. */
+  | { type: "list_voices" }
+  /** Ask for the MCP servers of the session and their status. */
+  | { type: "list_mcp" }
+  /** The window got or lost the focus. */
+  | { type: "focus"; focused: boolean }
+  /** Start the cost count again at 0. */
+  | { type: "reset_cost" };
+
+/** The spend since the last cost reset. `blocked`: the cost limit stops new requests. */
+export type CostInfo = { spentUsd: number; budgetUsd: number; requests: number; since: number; blocked: boolean };
+
+export type VoiceInfo = { id: string; name: string; category: string };
+
+export type McpStatus = {
+  name: string;
+  /** connected, failed, needs-auth, pending or disabled. */
+  status: string;
+  /** Where the server comes from: user, project, plugin, claudeai, dynamic (Jeeves) and more. */
+  source: string;
+  error: string;
+  tools: number;
+};
 
 export type AgentState = "no_project" | "starting" | "ready" | "busy" | "fault";
 
@@ -50,15 +76,25 @@ export type FromBrain =
   | { type: "transcript"; id: number; text: string }
   | { type: "transcript_error"; id: number; msg: string }
   | { type: "agent_status"; state: AgentState; project: string; msg: string }
-  /** Full assistant text for the panel. */
+  /** Full assistant text for the log. */
   | { type: "agent_text"; text: string }
+  /** The spoken summary of a reply, for the transcript. `more`: the log has more detail. */
+  | { type: "agent_said"; text: string; more: boolean }
   /** A tool started. `phrase` is short and can be empty. */
   | { type: "agent_tool"; tool: string; phrase: string }
   | { type: "permission_request"; id: number; text: string; detail: string }
   | { type: "question"; id: number; questions: Question[] }
   /** A permission request or question is answered or no longer open. */
   | { type: "request_closed"; id: number }
-  | { type: "agent_result"; ok: boolean; costUsd: number; turns: number };
+  | { type: "agent_result"; ok: boolean; costUsd: number; turns: number }
+  /** The current config. `keys`: which API keys the brain has. */
+  | { type: "config"; config: Config; keys: { elevenlabs: boolean; anthropic: boolean } }
+  | { type: "voices"; voices: VoiceInfo[]; error: string }
+  /** `error` is set when the brain could not get the status, for example without a session. */
+  | { type: "mcp_status"; servers: McpStatus[]; error: string }
+  /** Recent project folders, the newest first. */
+  | { type: "projects"; recent: string[] }
+  | ({ type: "cost" } & CostInfo);
 
 const TO_BRAIN_TYPES = new Set<ToBrain["type"]>([
   "ping",
@@ -71,6 +107,11 @@ const TO_BRAIN_TYPES = new Set<ToBrain["type"]>([
   "question_answer",
   "interrupt",
   "set_project",
+  "set_config",
+  "list_voices",
+  "list_mcp",
+  "focus",
+  "reset_cost",
 ]);
 const AGENT_STATES = new Set<AgentState>(["no_project", "starting", "ready", "busy", "fault"]);
 const FROM_BRAIN_TYPES = new Set<FromBrain["type"]>([
@@ -84,11 +125,17 @@ const FROM_BRAIN_TYPES = new Set<FromBrain["type"]>([
   "transcript_error",
   "agent_status",
   "agent_text",
+  "agent_said",
   "agent_tool",
   "permission_request",
   "question",
   "request_closed",
   "agent_result",
+  "config",
+  "voices",
+  "mcp_status",
+  "projects",
+  "cost",
 ]);
 
 const isStringRecord = (v: unknown): v is Record<string, string> =>
@@ -159,6 +206,18 @@ export function parseToBrain(line: string): ToBrain | null {
       return { type: "interrupt" };
     case "set_project":
       return typeof obj.path === "string" ? { type: "set_project", path: obj.path } : null;
+    case "set_config":
+      return typeof obj.config === "object" && obj.config !== null
+        ? { type: "set_config", config: parseConfig(obj.config) }
+        : null;
+    case "list_voices":
+      return { type: "list_voices" };
+    case "list_mcp":
+      return { type: "list_mcp" };
+    case "focus":
+      return typeof obj.focused === "boolean" ? { type: "focus", focused: obj.focused } : null;
+    case "reset_cost":
+      return { type: "reset_cost" };
   }
   return null;
 }
@@ -213,6 +272,10 @@ export function parseFromBrain(line: string): FromBrain | null {
         : null;
     case "agent_text":
       return typeof obj.text === "string" ? { type: "agent_text", text: obj.text } : null;
+    case "agent_said":
+      return typeof obj.text === "string" && typeof obj.more === "boolean"
+        ? { type: "agent_said", text: obj.text, more: obj.more }
+        : null;
     case "agent_tool":
       return typeof obj.tool === "string" && typeof obj.phrase === "string"
         ? { type: "agent_tool", tool: obj.tool, phrase: obj.phrase }
@@ -231,6 +294,56 @@ export function parseFromBrain(line: string): FromBrain | null {
       return typeof obj.ok === "boolean" && typeof obj.costUsd === "number" && typeof obj.turns === "number"
         ? { type: "agent_result", ok: obj.ok, costUsd: obj.costUsd, turns: obj.turns }
         : null;
+    case "config": {
+      const keys = obj.keys as Record<string, unknown> | null;
+      return typeof obj.config === "object" &&
+        obj.config !== null &&
+        typeof keys === "object" &&
+        keys !== null &&
+        typeof keys.elevenlabs === "boolean" &&
+        typeof keys.anthropic === "boolean"
+        ? { type: "config", config: parseConfig(obj.config), keys: { elevenlabs: keys.elevenlabs, anthropic: keys.anthropic } }
+        : null;
+    }
+    case "voices":
+      return Array.isArray(obj.voices) &&
+        typeof obj.error === "string" &&
+        obj.voices.every(
+          (v) =>
+            typeof v === "object" &&
+            v !== null &&
+            typeof (v as VoiceInfo).id === "string" &&
+            typeof (v as VoiceInfo).name === "string" &&
+            typeof (v as VoiceInfo).category === "string",
+        )
+        ? { type: "voices", voices: obj.voices as VoiceInfo[], error: obj.error }
+        : null;
+    case "mcp_status":
+      return Array.isArray(obj.servers) &&
+        typeof obj.error === "string" &&
+        obj.servers.every((v) => {
+          const s = v as Record<string, unknown>;
+          return (
+            typeof v === "object" &&
+            v !== null &&
+            ["name", "status", "source", "error"].every((k) => typeof s[k] === "string") &&
+            typeof s.tools === "number"
+          );
+        })
+        ? { type: "mcp_status", servers: obj.servers as McpStatus[], error: obj.error }
+        : null;
+    case "projects":
+      return isStringArray(obj.recent) ? { type: "projects", recent: obj.recent } : null;
+    case "cost": {
+      const { spentUsd, budgetUsd, requests, since, blocked } = obj;
+      return typeof spentUsd === "number" &&
+        typeof budgetUsd === "number" &&
+        typeof requests === "number" &&
+        typeof since === "number" &&
+        typeof blocked === "boolean"
+        ? { type: "cost", spentUsd, budgetUsd, requests, since, blocked }
+        : null;
+    }
   }
   return null;
 }

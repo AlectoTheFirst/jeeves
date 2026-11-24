@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyYesNo, isStopCommand, matchOption } from "./intent.ts";
+import { classifyYesNo, isStopCommand, matchOption, matchProject, parseProjectSwitch } from "./intent.ts";
 import { firstSentences, permissionQuestion, splitReply, toolPhrase, toSpeakable } from "./spoken.ts";
 
 describe("classifyYesNo", () => {
@@ -62,11 +62,31 @@ describe("spoken text", () => {
     expect(toolPhrase("Bash", { command: "npm test", description: "Run the tests" })).toBe("Run the tests.");
     expect(toolPhrase("Read", { file_path: "/a/b/c.ts" })).toBe("Reading c.ts.");
     expect(toolPhrase("TodoWrite", {})).toBe("");
+    expect(toolPhrase("mcp__home-assistant__ha_call_service", {})).toBe("Using ha call service from home assistant.");
     expect(permissionQuestion("Bash", { command: "rm -rf build" })).toBe(
-      "Claude wants to do this: Running rm -rf build. Allow?",
+      "I want to do this: Running rm -rf build. Allow?",
     );
     expect(permissionQuestion("Write", {}, "Claude wants to write hello.txt")).toBe(
-      "Claude wants to write hello.txt. Allow?",
+      "I want to write hello.txt. Allow?",
     );
+  });
+});
+
+describe("project switch", () => {
+  it("finds the project name in a switch command", () => {
+    expect(parseProjectSwitch("Switch to project Jeeves.")).toBe("jeeves");
+    expect(parseProjectSwitch("please change to the project star garden")).toBe("star garden");
+    expect(parseProjectSwitch("Open project star garden, please")).toBe("star garden");
+    expect(parseProjectSwitch("switch to the other branch")).toBeNull();
+    expect(parseProjectSwitch("what is in this project")).toBeNull();
+  });
+
+  it("matches a spoken name to a recent folder", () => {
+    const recent = ["/Users/a/code/jeeves", "/Users/a/code/ai-code/star_garden", "/Users/a/code/jeeves-old"];
+    expect(matchProject("jeeves", recent)).toBe("/Users/a/code/jeeves");
+    expect(matchProject("star garden", recent)).toBe("/Users/a/code/ai-code/star_garden");
+    expect(matchProject("star", recent)).toBe("/Users/a/code/ai-code/star_garden");
+    expect(matchProject("banana", recent)).toBeNull();
+    expect(matchProject("", recent)).toBeNull();
   });
 });
