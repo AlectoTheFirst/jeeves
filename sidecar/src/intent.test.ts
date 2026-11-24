@@ -11,6 +11,18 @@ describe("classifyYesNo", () => {
     ["don't do that", "deny"],
     ["nope", "deny"],
     ["what is this", "unclear"],
+    ["yes please", "allow"],
+    ["sure, go for it", "allow"],
+    ["Okay, don't do that", "deny"],
+    ["ok stop", "deny"],
+    ["sure, cancel it", "deny"],
+    ["fine, not now", "deny"],
+    ["yes, no wait", "deny"],
+    ["ok I can't say", "deny"],
+    ["go back", "unclear"],
+    ["ok now fix the tests", "unclear"],
+    ["okay so first read the file and then do not touch the tests", "unclear"],
+    ["no, use the other folder and run the tests again after that", "deny"],
     ["", "unclear"],
   ])("%s -> %s", (text, expected) => {
     expect(classifyYesNo(text)).toBe(expected);
@@ -63,8 +75,12 @@ describe("spoken text", () => {
     expect(toolPhrase("Read", { file_path: "/a/b/c.ts" })).toBe("Reading c.ts.");
     expect(toolPhrase("TodoWrite", {})).toBe("");
     expect(toolPhrase("mcp__home-assistant__ha_call_service", {})).toBe("Using ha call service from home assistant.");
-    expect(permissionQuestion("Bash", { command: "rm -rf build" })).toBe(
-      "I want to do this: Running rm -rf build. Allow?",
+    expect(permissionQuestion("Bash", { command: "rm -rf build" })).toBe("I want to run rm -rf build. Allow?");
+    expect(
+      permissionQuestion("Bash", { command: "rm -rf ~ ; echo", description: "List files" }, "Claude wants to list files"),
+    ).toBe("I want to run rm -rf ~ ; echo. Allow?");
+    expect(permissionQuestion("Bash", { command: "a b c d e f g h i j" })).toBe(
+      "I want to run a b c d e f g h and more. Allow?",
     );
     expect(permissionQuestion("Write", {}, "Claude wants to write hello.txt")).toBe(
       "I want to write hello.txt. Allow?",

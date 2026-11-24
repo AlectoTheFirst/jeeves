@@ -9,18 +9,37 @@ const normalize = (text: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
-const ALLOW = /^(yes|yeah|yep|yup|sure|ok|okay|allow( it)?|do it|go( ahead)?|go for it|approve(d)?|fine|please do|affirmative|of course|absolutely)\b/;
-const DENY = /^(no|nope|nah|don't|do not|deny|denied|stop|cancel|never|negative|not now|skip( it)?|reject)\b/;
+const DENY_START = /^(no|nope|nah|don't|do not|deny|denied|stop|cancel|never|negative|not now|skip( it)?|reject)\b/;
+/** Words that make a short reply a refusal, wherever they are. Any word that ends in "n't" counts too. */
+const DENY_WORDS = new Set([
+  "no", "nope", "nah", "not", "dont", "never", "negative", "deny", "denied", "reject", "stop",
+  "cancel", "wait", "hold", "abort", "halt", "skip",
+]);
+/** An allow reply has at least 1 of these words. */
+const ALLOW_WORDS = new Set([
+  "yes", "yeah", "yep", "yup", "yea", "ya", "sure", "ok", "okay", "alright", "allow", "approve", "approved",
+  "fine", "affirmative", "absolutely", "definitely", "proceed", "go", "do", "course", "good",
+]);
+/** Other words that an allow reply can hold. */
+const ALLOW_FILLER = new Set([
+  "it", "ahead", "for", "please", "thanks", "thank", "you", "of", "sounds", "that's", "that", "is", "all", "right", "then", "just", "jeeves",
+]);
+/** A reply with more words than this is a yes or a no only if it starts with a deny word. */
+const SHORT_REPLY = 6;
 
-/** Answer to "Allow this?". A reply that starts with a clear word decides. */
+/**
+ * Answer to "Allow this?". A short reply with a deny word anywhere, or any reply that
+ * starts with a deny word, is "deny". Only a short reply of allow words is "allow".
+ */
 export function classifyYesNo(text: string): YesNo {
   const t = normalize(text);
   if (!t) return "unclear";
-  const deny = DENY.test(t);
-  const allow = ALLOW.test(t);
-  if (deny && !allow) return "deny";
-  if (allow && !deny) return "allow";
-  return "unclear";
+  const words = t.split(" ");
+  const short = words.length <= SHORT_REPLY;
+  if (DENY_START.test(t)) return "deny";
+  if (words.some((w) => DENY_WORDS.has(w) || w.endsWith("n't"))) return short ? "deny" : "unclear";
+  const allowOnly = words.every((w) => ALLOW_WORDS.has(w) || ALLOW_FILLER.has(w));
+  return short && allowOnly && words.some((w) => ALLOW_WORDS.has(w)) ? "allow" : "unclear";
 }
 
 /** True when the whole reply is a request to stop the current work. */

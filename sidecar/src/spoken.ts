@@ -74,6 +74,12 @@ export function toolPhrase(tool: string, input: Record<string, unknown>): string
 
 /** The spoken permission question. Uses the SDK's own sentence when it has one. */
 export function permissionQuestion(tool: string, input: Record<string, unknown>, title?: string): string {
+  // A Bash approval names the command itself. The model writes the description and the title can repeat it.
+  if (tool === "Bash" && typeof input.command === "string" && input.command.trim()) {
+    const words = input.command.trim().split(/\s+/);
+    const shown = words.slice(0, 8).join(" ");
+    return `I want to run ${shown}${words.length > 8 ? " and more" : ""}. Allow?`;
+  }
   // The head speaks as its character, so "Claude wants" becomes "I want".
   if (title) return `${toSpeakable(title).replace(/^Claude( Code)? wants\b/i, "I want")}. Allow?`;
   const phrase = toolPhrase(tool, input).replace(/\.$/, "");
