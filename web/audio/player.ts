@@ -58,6 +58,8 @@ export class SpeechPlayer {
   private glitchLevel = 0.5;
 
   private id: number | null = null;
+  /** The last utterance that stop() cut off. The brain can still send chunks for it. */
+  private stoppedId: number | null = null;
   private started = false;
   private finished = false;
   /** AudioContext time when speech time 0 plays. */
@@ -124,8 +126,14 @@ export class SpeechPlayer {
     }
     const id = this.id;
     const wasStarted = this.started;
+    if (id !== null) this.stoppedId = id;
     this.reset();
     if (id !== null && wasStarted) this.events.onEnd?.(id);
+  }
+
+  /** Accept chunks for every id again. A restarted brain uses its ids again. */
+  forgetStopped(): void {
+    this.stoppedId = null;
   }
 
   private reset(): void {
@@ -140,6 +148,7 @@ export class SpeechPlayer {
   }
 
   addChunk(chunk: SpeechChunk): void {
+    if (chunk.id === this.stoppedId) return;
     if (this.id !== chunk.id) {
       this.stop();
       this.id = chunk.id;

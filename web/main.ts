@@ -35,8 +35,15 @@ function setStatus(text: string): void {
   status.textContent = text;
 }
 
-async function sendToBrain(msg: ToBrain): Promise<void> {
-  await invoke("brain_send", { line: encode(msg) });
+/** Returns false when the message did not reach the brain, for example during a restart. */
+async function sendToBrain(msg: ToBrain): Promise<boolean> {
+  try {
+    await invoke("brain_send", { line: encode(msg) });
+    return true;
+  } catch (err) {
+    console.error(`[brain] ${msg.type} not sent: ${String(err)}`);
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------- head state
@@ -218,11 +225,11 @@ async function connectBrain(): Promise<void> {
   await listen<BrainExit>("brain-exit", (event) => onBrainExit(event.payload));
   await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
     windowFocused = focused;
-    void sendToBrain({ type: "focus", focused }).catch(() => {});
+    void sendToBrain({ type: "focus", focused });
     if (focused) void getCurrentWindow().requestUserAttention(null);
   });
   // The brain can be ready before the listener exists. Ask for its state directly too.
-  await sendToBrain({ type: "ping", id: Date.now() });
+  if (!(await sendToBrain({ type: "ping", id: Date.now() }))) setStatus("brain fault: the ping was not sent");
 }
 
 connectBrain().catch((err) => setStatus(`brain fault: ${String(err)}`));
@@ -234,6 +241,7 @@ type BrainExit = { code: number | null; restarting: boolean; delay_ms: number; a
 /** The brain stopped. Its open requests, speech and pending transcripts are gone. */
 function onBrainExit(exit: BrainExit): void {
   player.stop();
+  player.forgetStopped();
   cards.closeAll();
   for (const line of pendingTranscripts.values()) transcript.remove(line);
   pendingTranscripts.clear();
@@ -330,7 +338,12 @@ async function stopListening(): Promise<void> {
   pendingTranscripts.set(id, transcript.add("user", "...", true));
   head.setState("thinking");
   setStatus(`transcribing (peak ${result.peak.toFixed(3)})`);
-  await sendToBrain({ type: "transcribe", id, audio });
+  if (await sendToBrain({ type: "transcribe", id, audio })) return;
+  const line = pendingTranscripts.get(id);
+  pendingTranscripts.delete(id);
+  if (line) transcript.remove(line);
+  setStatus("brain fault: the recording was not sent");
+  restState();
 }
 
 const isTyping = (e: KeyboardEvent) =>
@@ -477,10 +490,16 @@ panel.addEventListener("submit", (e) => {
   const text = textInput.value.trim();
   if (!text) return;
   player.unlock();
-  transcript.add("user", text);
+  const line = transcript.add("user", text);
   logView.add("user", text);
   textInput.value = "";
-  void sendToBrain({ type: "user_text", text });
+  void sendToBrain({ type: "user_text", text }).then((sent) => {
+    if (sent) return;
+    transcript.remove(line);
+    if (!textInput.value) textInput.value = text;
+    setStatus("brain fault: the message was not sent");
+    logView.add("fault", "The message was not sent.");
+  });
 });
 textInput.addEventListener("keydown", (e) => {
   // Enter sends. Shift+Enter makes a new line. Escape closes the panel.
@@ -511,6 +530,8 @@ $("open-log").addEventListener("click", () => toggleLog());
 /** The brain owns the config. In the browser preview, it lives here only. */
 let config: Config = parseConfig(urlFace ? { face: urlFace } : undefined);
 let windowSizeRestored = false;
+/** The brain can send its default config, with no saved size, before it loads the settings. */
+let brainConfigSeen = false;
 
 const settingsView = new SettingsView($("settings"), allFaces(), {
   change: (next) => updateConfig(next),
@@ -700,11 +721,12 @@ function applyConfig(next: Config, fromBrain = false): void {
   panelIdleMs = next.look.panelHideSeconds * 1000;
   settingsView.show(next);
   logView.setName(characterFor(next).behavior.name);
-  // Restore the saved window size once, when the brain first sends the config.
-  if (fromBrain && !windowSizeRestored) {
+  // Restore the saved window size once, from the first brain config that has a size.
+  if (fromBrain) brainConfigSeen = true;
+  const { windowWidth: w, windowHeight: h } = next.look;
+  if (fromBrain && !windowSizeRestored && w > 0 && h > 0) {
     windowSizeRestored = true;
-    const { windowWidth: w, windowHeight: h } = next.look;
-    if (w > 0 && h > 0 && (w !== window.innerWidth || h !== window.innerHeight)) {
+    if (w !== window.innerWidth || h !== window.innerHeight) {
       void getCurrentWindow().setSize(new LogicalSize(w, h));
     }
   }
@@ -737,7 +759,9 @@ window.addEventListener("resize", () => {
 });
 
 function saveWindowSize(): void {
-  if (!windowSizeRestored) return;
+  if (!brainConfigSeen) return;
+  // A size that the user chose replaces the saved size.
+  windowSizeRestored = true;
   const w = window.innerWidth;
   const h = window.innerHeight;
   if (w === config.look.windowWidth && h === config.look.windowHeight) return;
