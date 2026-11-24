@@ -67,11 +67,13 @@ export class MicRecorder {
   private stream: MediaStream | null = null;
   private node: AudioWorkletNode | null = null;
   private opening: Promise<void> | null = null;
+  private tail: Promise<Recording | undefined> | null = null;
   private blocks: Float32Array[] = [];
   private samples = 0;
   private preroll: Float32Array[] = [];
   private recording = false;
   private live = false;
+  private maxed = false;
   private startedAt = 0;
   private levelAcc: Float32Array[] = [];
 
@@ -95,11 +97,26 @@ export class MicRecorder {
 
   /** Open the mic. The first call asks the user for permission. */
   private open(): Promise<void> {
+    // A track ends when its device goes away. An ended track gives no sound.
+    if (!this.recording && this.stream && !this.stream.getAudioTracks().some((t) => t.readyState === "live")) {
+      this.close();
+    }
     this.opening ??= this.doOpen().catch((err) => {
       this.opening = null;
       throw err;
     });
     return this.opening;
+  }
+
+  private close(): void {
+    for (const track of this.stream?.getTracks() ?? []) track.stop();
+    this.node?.disconnect();
+    void this.ctx?.close().catch(() => {});
+    this.stream = null;
+    this.node = null;
+    this.ctx = null;
+    this.opening = null;
+    this.preroll = [];
   }
 
   private async doOpen(): Promise<void> {
@@ -139,7 +156,10 @@ export class MicRecorder {
       this.events.onLevel?.(level(join(this.levelAcc)));
       this.levelAcc = [];
     }
-    if (this.samples >= this.ctx.sampleRate * MAX_SECONDS) this.events.onMaxLength?.();
+    if (!this.maxed && this.samples >= this.ctx.sampleRate * MAX_SECONDS) {
+      this.maxed = true;
+      this.events.onMaxLength?.();
+    }
   }
 
   /**
@@ -160,6 +180,7 @@ export class MicRecorder {
     this.levelAcc = [];
     this.startedAt = performance.now();
     this.live = this.blocks.some((b) => !isDead(b));
+    this.maxed = false;
     this.recording = true;
     if (this.live) this.events.onLive?.(0);
   }
@@ -167,13 +188,21 @@ export class MicRecorder {
   /**
    * Stop after a short tail, so that the last word is not cut off.
    * If `keep()` is true at the end of the tail, the recording continues and the
-   * result is undefined.
+   * result is undefined. A kept recording at the 60 s limit calls `onMaxLength`
+   * again at the next block. A call during a running tail returns undefined, and the
+   * running tail gives the result.
    */
-  async stopAfterTail(keep: () => boolean): Promise<Recording | undefined> {
-    if (!this.recording) return { kind: "short" };
-    await new Promise((resolve) => setTimeout(resolve, TAIL_MS));
-    if (keep()) return undefined;
-    return this.stop();
+  stopAfterTail(keep: () => boolean): Promise<Recording | undefined> {
+    if (!this.recording) return Promise.resolve({ kind: "short" });
+    if (this.tail) return Promise.resolve(undefined);
+    const tail = new Promise<void>((resolve) => setTimeout(resolve, TAIL_MS)).then(() => {
+      this.tail = null;
+      if (!keep()) return this.stop();
+      this.maxed = false;
+      return undefined;
+    });
+    this.tail = tail;
+    return tail;
   }
 
   /** Stop now. The audio is base64 PCM (16 kHz, 16-bit, mono). */
