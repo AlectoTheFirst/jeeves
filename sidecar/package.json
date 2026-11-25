@@ -8,8 +8,8 @@
     "start": "bun src/main.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.322",
-    "@anthropic-ai/sdk": "^1.7.0"
+    "@anthropic-ai/claude-agent-sdk": "^0.3.330",
+    "@anthropic-ai/sdk": "^1.12.0"
   },
   "license": "MIT",
   "author": "Starkweb <126573706+AlectoTheFirst@users.noreply.github.com>"
