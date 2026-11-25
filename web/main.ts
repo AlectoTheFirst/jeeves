@@ -8,7 +8,14 @@ import { MicRecorder } from "./audio/mic.ts";
 import { SpeechPlayer } from "./audio/player.ts";
 import { allFaces, faceById, setInstalledFaces, type Face } from "./scene/faces.ts";
 import { loadFacePackage } from "./scene/faceLoader.ts";
-import { isPackageFaceId, PACKAGE_PREFIX, packageFaceId } from "./scene/facePackage.ts";
+import {
+  isPackageFaceId,
+  PACKAGE_PREFIX,
+  packageFaceId,
+  type FaceCatalog,
+  type InstalledPackage,
+  type InstallOutcome,
+} from "./scene/facePackage.ts";
 import { HeadScene } from "./scene/head.ts";
 import { HEAD_STATES } from "./scene/state.ts";
 import { RequestCards } from "./ui/requests.ts";
@@ -544,6 +551,20 @@ const settingsView = new SettingsView($("settings"), allFaces(), {
   refreshMcp: () => void sendToBrain({ type: "list_mcp" }),
   installFace: () => void installFace(),
   removeFace: (faceId) => void removeFace(faceId),
+  installFaceUrl: (url, sha256) =>
+    void runInstall(() => invoke<InstallOutcome>("face_install_url", { url, sha256 })),
+  loadCatalog: () => void loadCatalog(),
+  installCatalogFace: (id) =>
+    void runInstall(() =>
+      invoke<InstallOutcome>("face_install_catalog", { url: config.faces.catalogUrl, key: config.faces.catalogKey, id }),
+    ),
+  confirmFace: (accept) => {
+    const question = faceQuestion;
+    if (!question) return;
+    void runInstall(() =>
+      invoke<InstallOutcome | null>("face_confirm", { accept, id: question.id, sha256: question.new.sha256 }),
+    );
+  },
   close: () => closeOverlay(settingsView),
 });
 
@@ -567,7 +588,9 @@ async function loadInstalledFaces(ifChanged = false): Promise<void> {
   if (!isTauri()) return;
   let ids: string[];
   try {
-    ids = await invoke<string[]>("face_list");
+    const installed = await invoke<InstalledPackage[]>("face_list");
+    settingsView.setInstalled(installed);
+    ids = installed.map((p) => p.id);
   } catch (err) {
     settingsView.setFaceNote(`Face packages: ${String(err)}`);
     return;
@@ -600,19 +623,56 @@ async function loadInstalledFaces(ifChanged = false): Promise<void> {
 }
 
 async function installFace(): Promise<void> {
+  await runInstall(() => invoke<InstallOutcome | null>("face_install"));
+}
+
+/** The replace question that the settings show, or null. */
+let faceQuestion: Extract<InstallOutcome, { kind: "confirm" }> | null = null;
+
+/** Run 1 install command and show its result. A null result means that the user cancelled. */
+async function runInstall(install: () => Promise<InstallOutcome | null>): Promise<void> {
+  // Each install replaces the package that waits in the shell, so an open question is void.
+  faceQuestion = null;
+  settingsView.showFaceConfirm(null);
+  settingsView.setFaceNote("installing");
+  let outcome: InstallOutcome | null;
   try {
-    const id = await invoke<string | null>("face_install");
-    if (!id) return;
-    await loadInstalledFaces();
-    const faceId = packageFaceId(id);
-    if (!allFaces().some((f) => f.id === faceId)) {
-      setStatus(`face ${id} is installed, but it could not load`);
-      return;
-    }
-    updateConfig({ ...config, face: faceId });
-    setStatus(`face installed: ${faceById(faceId).name}`);
+    outcome = await install();
   } catch (err) {
     settingsView.setFaceNote(`Install failed: ${String(err)}`);
+    return;
+  }
+  settingsView.setFaceNote("");
+  if (!outcome) return;
+  if (outcome.kind === "confirm") {
+    faceQuestion = outcome;
+    settingsView.showFaceConfirm(outcome);
+    return;
+  }
+  if (outcome.kind === "unchanged") {
+    setStatus(`face ${outcome.id} is already installed`);
+    return;
+  }
+  await loadInstalledFaces();
+  const faceId = packageFaceId(outcome.id);
+  if (!allFaces().some((f) => f.id === faceId)) {
+    setStatus(`face ${outcome.id} is installed, but it could not load`);
+    return;
+  }
+  updateConfig({ ...config, face: faceId });
+  setStatus(`face installed: ${faceById(faceId).name}`);
+}
+
+async function loadCatalog(): Promise<void> {
+  const { catalogUrl, catalogKey } = config.faces;
+  if (!catalogUrl) {
+    settingsView.setCatalog(null, "no catalog URL");
+    return;
+  }
+  try {
+    settingsView.setCatalog(await invoke<FaceCatalog>("face_catalog", { url: catalogUrl, key: catalogKey }));
+  } catch (err) {
+    settingsView.setCatalog(null, String(err));
   }
 }
 

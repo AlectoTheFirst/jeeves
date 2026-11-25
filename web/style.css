@@ -505,3 +505,13 @@ body:not(.dev) .dev-only {
   padding: 1px 6px;
   font-size: 10px;
 }
+
+#settings .face-confirm {
+  margin: 6px 0;
+  padding: 8px;
+  border: 1px solid var(--warn);
+}
+
+#settings .face-confirm p {
+  margin: 0 0 6px;
+}

@@ -203,3 +203,51 @@ export const rgb = (color: number): Rgb => `#${color.toString(16).padStart(6, "0
 
 /** "#12ab34" as the number 0x12ab34. */
 export const colorNumber = (rgb: Rgb) => Number.parseInt(rgb.slice(1), 16);
+
+/** Where an installed package came from. The shell writes it in faces/installed.json. */
+export type PackageRecord = {
+  source: "file" | "url" | "catalog";
+  /** The file path or the download URL. */
+  origin: string;
+  /** The catalog URL for source "catalog", else empty. */
+  catalog: string;
+  sha256: string;
+  /** Unix seconds. */
+  installed: number;
+  name: string;
+  version: string;
+  author: string;
+};
+
+export type InstalledPackage = { id: string; record: PackageRecord | null };
+
+export type InstallOutcome =
+  | { kind: "installed"; id: string; record: PackageRecord }
+  | { kind: "unchanged"; id: string }
+  | { kind: "confirm"; id: string; old: PackageRecord | null; new: PackageRecord };
+
+export type CatalogEntry = {
+  id: string;
+  name: string;
+  version: string;
+  author: string;
+  license: string;
+  description: string;
+  url: string;
+  sha256: string;
+  size: number;
+};
+
+export type FaceCatalog = { url: string; signed: boolean; faces: CatalogEntry[] };
+
+/** The state of a catalog face on this computer. */
+export function catalogState(
+  entry: CatalogEntry,
+  catalogUrl: string,
+  installed: readonly InstalledPackage[],
+): "new" | "installed" | "update" | "other" {
+  const here = installed.find((p) => p.id === entry.id);
+  if (!here) return "new";
+  if (!here.record || here.record.catalog !== catalogUrl) return "other";
+  return here.record.sha256 === entry.sha256 ? "installed" : "update";
+}

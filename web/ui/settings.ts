@@ -10,7 +10,15 @@ import {
   type McpServer,
 } from "../../sidecar/src/config.ts";
 import type { McpStatus, VoiceInfo } from "../../sidecar/src/protocol.ts";
-import { isPackageFaceId } from "../scene/facePackage.ts";
+import {
+  catalogState,
+  isPackageFaceId,
+  PACKAGE_PREFIX,
+  type FaceCatalog,
+  type InstalledPackage,
+  type InstallOutcome,
+  type PackageRecord,
+} from "../scene/facePackage.ts";
 
 export type SettingsEvents = {
   change: (config: Config) => void;
@@ -24,6 +32,14 @@ export type SettingsEvents = {
   installFace: () => void;
   /** Remove an installed face package. */
   removeFace: (faceId: string) => void;
+  /** Download and install a face package. An empty `sha256` skips the hash check. */
+  installFaceUrl: (url: string, sha256: string) => void;
+  /** Load the catalog of the config. */
+  loadCatalog: () => void;
+  /** Install or update 1 face of the loaded catalog. */
+  installCatalogFace: (id: string) => void;
+  /** Answer the replace question of the last install. */
+  confirmFace: (accept: boolean) => void;
   close: () => void;
 };
 
@@ -65,6 +81,18 @@ function slider(min: number, max: number, step: number): { input: HTMLInputEleme
   return { input, out, wrap: el("span", { className: "row" }, input, out) };
 }
 
+/** "version 1.2 by Ann", or "of unknown origin" without a record. */
+function describeRecord(record: PackageRecord | null): string {
+  if (!record) return "of unknown origin";
+  return `version ${record.version || "not known"} by ${record.author || "an unknown author"}`;
+}
+
+function sourceText(record: PackageRecord): string {
+  const date = new Date(record.installed * 1000).toISOString().slice(0, 10);
+  const from = record.source === "catalog" ? `catalog ${record.catalog}` : record.origin;
+  return `from ${from}, installed ${date}`;
+}
+
 export class SettingsView {
   private config: Config | null = null;
   private voices: VoiceInfo[] = [];
@@ -73,6 +101,16 @@ export class SettingsView {
   private face = el("select");
   private faceRemove = el("button", { type: "button", textContent: "Remove" });
   private faceNote = el("small");
+  private faceSource = el("small");
+  private installed: InstalledPackage[] = [];
+  private catalog: FaceCatalog | null = null;
+  private packageUrl = el("input", { type: "url", spellcheck: false, placeholder: "https://" });
+  private packageSha = el("input", { type: "text", spellcheck: false, maxLength: 64, placeholder: "SHA-256" });
+  private catalogUrl = el("input", { type: "url", spellcheck: false, placeholder: "https://" });
+  private catalogKey = el("input", { type: "text", spellcheck: false, maxLength: 64 });
+  private catalogNote = el("small");
+  private catalogList = el("div", { className: "mcp-list" });
+  private faceConfirm = el("div", { className: "face-confirm" });
   private name = el("input", { type: "text", maxLength: 40 });
   private personality = el("textarea", { rows: 3, maxLength: 1000 });
   private toolUpdates = el("input", { type: "checkbox" });
@@ -149,6 +187,16 @@ export class SettingsView {
     faceInstall.addEventListener("click", () => this.events.installFace());
     this.faceRemove.title = "Remove this face package";
     this.faceRemove.addEventListener("click", () => this.events.removeFace(this.face.value));
+    const urlInstall = el("button", { type: "button", textContent: "Install" });
+    urlInstall.addEventListener("click", () => {
+      if (this.packageUrl.value.trim()) this.events.installFaceUrl(this.packageUrl.value.trim(), this.packageSha.value.trim());
+    });
+    const catalogLoad = el("button", { type: "button", textContent: "Load catalog" });
+    catalogLoad.addEventListener("click", () => {
+      this.catalogNote.textContent = "loading";
+      this.events.loadCatalog();
+    });
+    this.faceConfirm.hidden = true;
     const mcpRefresh = el("button", { type: "button", textContent: "Refresh" });
     mcpRefresh.addEventListener("click", () => this.refreshMcp());
     const mcpAdd = el("button", { type: "button", textContent: "Add server" });
@@ -161,10 +209,23 @@ export class SettingsView {
         {},
         el("h3", {}, "Character"),
         row("Face", el("span", { className: "row" }, this.face, faceInstall, this.faceRemove), "The fields below are for this face."),
+        this.faceSource,
         this.faceNote,
+        this.faceConfirm,
         row("Name", this.name),
         row("Personality", this.personality, "The tone of the spoken lines. Facts and code stay plain."),
         row("Spoken tool updates", this.toolUpdates),
+      ),
+      el(
+        "section",
+        {},
+        el("h3", {}, "Face packages"),
+        row("Package URL", el("span", { className: "row" }, this.packageUrl, urlInstall)),
+        row("Package SHA-256", this.packageSha, "Optional"),
+        row("Catalog URL", el("span", { className: "row" }, this.catalogUrl, catalogLoad)),
+        row("Catalog key", this.catalogKey, "ed25519 public key as hex. Empty for a catalog that is not signed"),
+        this.catalogNote,
+        this.catalogList,
       ),
       el(
         "section",
@@ -243,7 +304,7 @@ export class SettingsView {
       this.glitch.input, this.speed.input, this.stability.input, this.style.input,
       this.language, this.keyterms, this.provider, this.model, this.backdrop, this.pinned,
       this.transcriptSeconds, this.panelSeconds, this.mcpUseClaude, this.budget,
-      this.notify, this.bounce, this.holdSpeech, this.claudeProjects,
+      this.notify, this.bounce, this.holdSpeech, this.claudeProjects, this.catalogUrl, this.catalogKey,
     ];
     for (const f of all) f.addEventListener("change", () => this.commit(f));
     this.voiceSelect.addEventListener("change", () => {
@@ -389,6 +450,69 @@ export class SettingsView {
     if (faces.some((f) => f.id === current)) this.face.value = current;
   }
 
+  /** The installed packages and their records. */
+  setInstalled(installed: readonly InstalledPackage[]): void {
+    this.installed = [...installed];
+    this.showFaceSource();
+    this.showCatalog();
+  }
+
+  /** A loaded catalog, or null and the fault text. */
+  setCatalog(catalog: FaceCatalog | null, fault = ""): void {
+    this.catalog = catalog;
+    this.catalogNote.textContent = catalog ? `${catalog.faces.length} faces, ${catalog.signed ? "signed" : "not signed"}` : fault;
+    this.showCatalog();
+  }
+
+  /** Ask whether a package replaces the installed package with the same id. Null hides the question. */
+  showFaceConfirm(outcome: Extract<InstallOutcome, { kind: "confirm" }> | null): void {
+    this.faceConfirm.replaceChildren();
+    this.faceConfirm.hidden = !outcome;
+    if (!outcome) return;
+    const replace = el("button", { type: "button", textContent: "Replace" });
+    replace.addEventListener("click", () => this.events.confirmFace(true));
+    const cancel = el("button", { type: "button", textContent: "Cancel" });
+    cancel.addEventListener("click", () => this.events.confirmFace(false));
+    this.faceConfirm.append(
+      el("p", {}, `Replace ${outcome.id} ${describeRecord(outcome.old)} with ${describeRecord(outcome.new)}?`),
+      el("div", { className: "row" }, cancel, replace),
+    );
+    cancel.focus();
+  }
+
+  private showFaceSource(): void {
+    const id = isPackageFaceId(this.face.value) ? this.face.value.slice(PACKAGE_PREFIX.length) : "";
+    const pkg = id ? this.installed.find((p) => p.id === id) : undefined;
+    this.faceSource.textContent = pkg ? `${describeRecord(pkg.record)}, ${pkg.record ? sourceText(pkg.record) : "source not known"}` : "";
+  }
+
+  private showCatalog(): void {
+    const catalog = this.catalog;
+    if (!catalog) {
+      this.catalogList.replaceChildren();
+      return;
+    }
+    this.catalogList.replaceChildren(
+      ...catalog.faces.map((f) => {
+        const state = catalogState(f, catalog.url, this.installed);
+        const line = el(
+          "div",
+          { className: "mcp-row", title: f.description },
+          el("span", { className: "mcp-name" }, f.name || f.id),
+          el("span", { className: "mcp-state" }, `${f.version}, ${f.author}, ${f.license}`),
+        );
+        if (state === "installed") line.append(el("span", { className: "mcp-state" }, "installed"));
+        else {
+          const label = state === "new" ? "Install" : state === "update" ? "Update" : "Replace";
+          const install = el("button", { type: "button", textContent: label });
+          install.addEventListener("click", () => this.events.installCatalogFace(f.id));
+          line.append(install);
+        }
+        return line;
+      }),
+    );
+  }
+
   /** A short note under the face list, for example a package fault. Empty hides it. */
   setFaceNote(text: string): void {
     this.faceNote.textContent = text;
@@ -408,6 +532,9 @@ export class SettingsView {
     };
     set(this.face, config.face);
     this.faceRemove.disabled = !isPackageFaceId(config.face);
+    set(this.catalogUrl, config.faces.catalogUrl);
+    set(this.catalogKey, config.faces.catalogKey);
+    this.showFaceSource();
     set(this.name, c.behavior.name);
     set(this.personality, c.behavior.personality);
     check(this.toolUpdates, c.behavior.toolUpdates);
@@ -490,6 +617,7 @@ export class SettingsView {
       budgetUsd: Number.isFinite(budget) && budget >= 0 ? budget : config.agent.budgetUsd,
       useClaudeProjects: this.claudeProjects.checked,
     };
+    config.faces = { catalogUrl: this.catalogUrl.value.trim(), catalogKey: this.catalogKey.value.trim() };
     config.attention = { notify: this.notify.checked, bounce: this.bounce.checked, holdSpeech: this.holdSpeech.checked };
     config.mcp = { ...config.mcp, useClaudeCode: this.mcpUseClaude.checked };
     config.look = {

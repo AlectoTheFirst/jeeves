@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  catalogState,
   colorNumber,
   FORMAT,
   isPackageFaceId,
@@ -110,5 +111,21 @@ describe("ids and colors", () => {
   it("converts colors both ways", () => {
     expect(rgb(0x0a0b0c)).toBe("#0a0b0c");
     expect(colorNumber("#0a0b0c")).toBe(0x0a0b0c);
+  });
+});
+
+describe("catalog state", () => {
+  const catalog = "https://example.org/faces/index.json";
+  const entry = { id: "owl", name: "Owl", version: "2", author: "Ann", license: "MIT", description: "", url: "", sha256: "b".repeat(64), size: 10 };
+  const record = (sha256: string, from: string) => ({
+    source: "catalog" as const, origin: "", catalog: from, sha256, installed: 0, name: "Owl", version: "1", author: "Ann",
+  });
+
+  it("finds new, installed, update and other packages", () => {
+    expect(catalogState(entry, catalog, [])).toBe("new");
+    expect(catalogState(entry, catalog, [{ id: "owl", record: record("b".repeat(64), catalog) }])).toBe("installed");
+    expect(catalogState(entry, catalog, [{ id: "owl", record: record("a".repeat(64), catalog) }])).toBe("update");
+    expect(catalogState(entry, catalog, [{ id: "owl", record: record("b".repeat(64), "https://other.org/i.json") }])).toBe("other");
+    expect(catalogState(entry, catalog, [{ id: "owl", record: null }])).toBe("other");
   });
 });

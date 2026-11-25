@@ -33,6 +33,16 @@ describe("parseConfig", () => {
     expect(parseConfig({ agent: { useClaudeProjects: false } }).agent.useClaudeProjects).toBe(false);
   });
 
+  it("keeps an HTTPS catalog URL and the catalog key text", () => {
+    const key = "AB".repeat(32);
+    const c = parseConfig({ faces: { catalogUrl: " https://example.org/faces/index.json ", catalogKey: ` ${key} ` } });
+    expect(c.faces).toEqual({ catalogUrl: "https://example.org/faces/index.json", catalogKey: key });
+    // A bad key stays, so that the shell refuses the catalog.
+    const bad = parseConfig({ faces: { catalogUrl: "http://example.org/index.json", catalogKey: "0xab" } });
+    expect(bad.faces).toEqual({ catalogUrl: "", catalogKey: "0xab" });
+    expect(parseConfig(undefined).faces).toEqual({ catalogUrl: "", catalogKey: "" });
+  });
+
   it("rejects a voice ID that could change the API path", () => {
     const c = parseConfig({ characters: { host: { voice: { voiceId: "../../v1/user" } } } });
     expect(c.characters.host.voice.voiceId).toBe(DEFAULT_VOICE_ID);

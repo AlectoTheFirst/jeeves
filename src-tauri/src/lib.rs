@@ -1,3 +1,4 @@
+mod catalog;
 mod faces;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -269,6 +270,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(Brain(Mutex::new(None)))
+        .manage(faces::Staged(Mutex::new(None)))
         .manage(Supervisor { quitting: AtomicBool::new(false), state: Mutex::new((Instant::now(), 0)) })
         .invoke_handler(tauri::generate_handler![
             brain_send,
@@ -277,6 +279,10 @@ pub fn run() {
             faces::face_list,
             faces::face_read,
             faces::face_install,
+            faces::face_install_url,
+            faces::face_catalog,
+            faces::face_install_catalog,
+            faces::face_confirm,
             faces::face_remove
         ])
         .setup(|app| {

@@ -73,6 +73,12 @@ export type Config = {
     /** Keep spoken lines until the window gets the focus again. */
     holdSpeech: boolean;
   };
+  faces: {
+    /** The HTTPS URL of a face catalog index. Empty = no catalog. */
+    catalogUrl: string;
+    /** The ed25519 public key of the catalog, as 64 hex characters. Empty = the index is not signed. The shell checks the format. */
+    catalogKey: string;
+  };
   look: {
     backdrop: boolean;
     /** True = the transcript stays visible. */
@@ -146,6 +152,7 @@ export const DEFAULT_CONFIG: Config = {
   agent: { provider: "claude-code", model: AGENT_MODELS[0], budgetUsd: 0, useClaudeProjects: true },
   mcp: { useClaudeCode: true, servers: {}, trusted: [] },
   attention: { notify: true, bounce: true, holdSpeech: false },
+  faces: { catalogUrl: "", catalogKey: "" },
   look: {
     backdrop: true,
     transcriptPinned: false,
@@ -246,6 +253,7 @@ export function parseConfig(raw: unknown): Config {
   const a = obj(r.agent);
   const l = obj(r.look);
   const t = obj(r.attention);
+  const f = obj(r.faces);
   const keyterms = Array.isArray(h.keyterms)
     ? h.keyterms.filter((t): t is string => typeof t === "string").map((t) => t.trim().slice(0, 50)).filter(Boolean).slice(0, 50)
     : d.hearing.keyterms;
@@ -267,6 +275,12 @@ export function parseConfig(raw: unknown): Config {
       notify: bool(t.notify, d.attention.notify),
       bounce: bool(t.bounce, d.attention.bounce),
       holdSpeech: bool(t.holdSpeech, d.attention.holdSpeech),
+    },
+    faces: {
+      catalogUrl:
+        typeof f.catalogUrl === "string" && /^https:\/\/\S{1,2000}$/.test(f.catalogUrl.trim()) ? f.catalogUrl.trim() : "",
+      // A bad key stays, so that the shell refuses the catalog and does not skip the signature check.
+      catalogKey: typeof f.catalogKey === "string" ? f.catalogKey.trim().slice(0, 200) : "",
     },
     look: {
       backdrop: bool(l.backdrop, d.look.backdrop),

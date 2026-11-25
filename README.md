@@ -73,7 +73,7 @@ Say "stop" to interrupt the agent. Say "yes" or "no" to answer a permission card
 
 ## Face packages
 
-You can add faces from face packages: `.glb` files with a 3D model and a manifest. A package holds no code. To install one, open the settings and click **Install face**. Read [docs/face-packages.md](docs/face-packages.md) for the format.
+You can add faces from face packages: `.glb` files with a 3D model and a manifest. A package holds no code. You can install a package from a file, from an HTTPS URL, or from a face catalog with an optional ed25519 signature. Jeeves records the source and the hash of each package. Read [docs/face-packages.md](docs/face-packages.md) for the format and for how to make a catalog.
 
 ## How it works
 
