@@ -24,10 +24,15 @@ export function keyPath() {
 
 /** Make a new key file. Refuses to replace a key file. Returns the public key as hex. */
 export function keygen(path = keyPath()) {
-  if (existsSync(path)) throw new Error(`a key file is already at ${path}`);
   const { privateKey } = generateKeyPairSync("ed25519");
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600, flag: "wx" });
+  try {
+    // "wx" fails if the file exists, in the same call that creates it.
+    writeFileSync(path, privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600, flag: "wx" });
+  } catch (err) {
+    if (err.code === "EEXIST") throw new Error(`a key file is already at ${path}`);
+    throw err;
+  }
   return publicKeyHex(privateKey);
 }
 

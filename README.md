@@ -89,7 +89,7 @@ The web view and the brain send JSON lines to each other through the shell. The 
 
 ## Privacy
 
-- **Audio.** Your recording goes to ElevenLabs for speech to text. Jeeves keeps only the last recording, in `$TMPDIR/jeeves-last-recording.wav`.
+- **Audio.** Your recording goes to ElevenLabs for speech to text. Jeeves keeps only the last recording, in `~/Library/Application Support/app.jeeves.desktop/last-recording.wav`.
 - **Text.** The spoken reply goes to ElevenLabs for text to speech. Your requests go to Anthropic, through Claude Code or the API.
 - **Local files.** The settings are in `~/Library/Application Support/app.jeeves.desktop/brain-settings.json`. If "Show my Claude Code projects" is on, Jeeves reads `~/.claude.json` to list your projects. Jeeves never writes to that file.
 

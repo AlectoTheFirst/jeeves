@@ -6,10 +6,12 @@ import { join } from "node:path";
 
 const MAX_PROJECTS = 100;
 
-/** Temporary folders, for example the scratchpads of agent sessions. */
-const TEMPORARY = /^\/(private\/)?(tmp|var\/folders)\/|\/scratchpad(\/|$)/;
+/** The system temporary folders. */
+const TEMPORARY_ROOT = /^\/(?:private\/)?(?:tmp|var\/folders)\//;
+/** A scratchpad folder of an agent session, at any depth. */
+const SCRATCHPAD = /\/scratchpad(?:\/|$)/;
 
-export const isTemporary = (path: string) => TEMPORARY.test(path);
+export const isTemporary = (path: string) => TEMPORARY_ROOT.test(path) || SCRATCHPAD.test(path);
 
 /** The folder name under ~/.claude/projects: each character that is not a letter or digit becomes "-". */
 export const sessionFolderName = (path: string) => path.replace(/[^A-Za-z0-9]/g, "-");
@@ -26,7 +28,7 @@ export function pickClaudeProjects(
   const projects = (raw as { projects?: unknown })?.projects;
   if (typeof projects !== "object" || projects === null) return [];
   return Object.entries(projects as Record<string, unknown>)
-    .filter(([path]) => path.startsWith("/") && !TEMPORARY.test(path) && exists(path))
+    .filter(([path]) => path.startsWith("/") && !isTemporary(path) && exists(path))
     .map(([path, entry]) => ({ path, time: lastUsed(path, (entry ?? {}) as Record<string, unknown>) }))
     .sort((a, b) => b.time - a.time)
     .slice(0, MAX_PROJECTS)

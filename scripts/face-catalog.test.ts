@@ -1,5 +1,5 @@
 import { createPrivateKey, createPublicKey, verify } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -41,9 +41,11 @@ describe("face catalog script", () => {
     const path = join(root, "keys", "catalog.key");
     const publicHex = keygen(path);
     expect(publicHex).toMatch(/^[0-9a-f]{64}$/);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    const fd = openSync(path, "r");
+    expect(fstatSync(fd).mode & 0o777).toBe(0o600);
+    const key = createPrivateKey(readFileSync(fd));
+    closeSync(fd);
     expect(() => keygen(path)).toThrow("already");
-    const key = createPrivateKey(readFileSync(path));
     expect(publicKeyHex(key)).toBe(publicHex);
     const data = Buffer.from('{"format":"jeeves-face-catalog/1","faces":[]}');
     const signature = Buffer.from(signBytes(data, key), "hex");

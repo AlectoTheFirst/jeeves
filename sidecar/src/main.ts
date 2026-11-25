@@ -1,9 +1,8 @@
 // Jeeves brain: the sidecar process. It owns all network calls and the agent
 // session, and routes what the user says.
 import { statSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { createAgent, type AgentMessage, type PermissionAsk, type CreateAgentOptions, type BrainAgent } from "./agents/index.ts";
 import { loadClaudeProjects, mergeProjects } from "./claudeProjects.ts";
@@ -11,7 +10,7 @@ import { addRecent, costDelta, isBlocked, rememberTotal } from "./cost.ts";
 import { classifyYesNo, isStopCommand, matchOption, matchProject, parseProjectSwitch } from "./intent.ts";
 import { PROTOCOL_VERSION, encode, parseToBrain, type AgentState, type FromBrain, type Question } from "./protocol.ts";
 import { characterFor, characterNote, mcpToolPrefix, parseConfig, personaPrompt, type Config } from "./config.ts";
-import { emptySettings, loadSettings, saveSettings, type BrainSettings } from "./settings.ts";
+import { emptySettings, loadSettings, saveSettings, SETTINGS_PATH, type BrainSettings } from "./settings.ts";
 import { permissionQuestion, splitReply, toolPhrase } from "./spoken.ts";
 import { pcm16ToWav, transcribe, type SttOptions } from "./stt.ts";
 import { listVoices, SAMPLE_RATE, streamSpeech, type VoiceConfig } from "./voice.ts";
@@ -644,8 +643,11 @@ async function handleTranscribe(id: number, audio: string): Promise<void> {
     return;
   }
   // Keep the last recording on disk, to find faults in the audio path.
-  const wavPath = join(tmpdir(), "jeeves-last-recording.wav");
-  writeFile(wavPath, pcm16ToWav(Buffer.from(audio, "base64"))).catch(() => {});
+  // The folder of the settings belongs to the user. The shared temporary folder does not.
+  const wavPath = join(dirname(SETTINGS_PATH), "last-recording.wav");
+  mkdir(dirname(wavPath), { recursive: true, mode: 0o700 })
+    .then(() => writeFile(wavPath, pcm16ToWav(Buffer.from(audio, "base64")), { mode: 0o600 }))
+    .catch(() => {});
   try {
     const result = await transcribe(ELEVENLABS_KEY, audio, sttOptions());
     log("info", `stt: language ${result.language} (${result.probability.toFixed(2)})`);
