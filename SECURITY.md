@@ -22,3 +22,7 @@ Jeeves reads the API keys from the macOS Keychain, service `jeeves`. Only the Ru
 ## Web view
 
 The web view has a strict Content Security Policy. It loads scripts only from the app and from a `blob:` URL for the audio worklet. It does not load content from the internet.
+
+## Face packages
+
+A face package holds only data. Only the Rust shell downloads packages and catalogs, and only over HTTPS. Read [docs/face-packages.md](docs/face-packages.md) for the checks.
